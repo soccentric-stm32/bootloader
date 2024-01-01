@@ -1,0 +1,156 @@
+/*
+ * ld/boot.ld - A/B bootloader linker script
+ *
+ * Author:  Sandesh Ghimire <sandesh@soccentric.com>
+ * Date:    2026-11-03
+ * Target:  STM32F767ZIT6, dual-bank flash (nDBANK = 0, BASM-001)
+ * SRS:     LAY-001, BCON-005, BNFR-001
+ *
+ * Dual-bank sectors (RM0410): each 1 MB bank has 4 x 16 KB, 1 x 64 KB and
+ * 7 x 128 KB. BOOT owns bank 1 sectors 0-1 (0x08000000..0x08007FFF); the
+ * metadata sector and slot A follow at 0x08008000 / 0x0800C000.
+ */
+
+ENTRY(Reset_Handler)
+
+/* Main stack top: top of the BOOT RAM budget in DTCM. */
+_estack = ORIGIN(RAM) + LENGTH(RAM);
+
+MEMORY
+{
+    /* Bank 1 sectors 0-1 only (LAY-001, BCON-005). */
+    FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 32K
+    /* BNFR-001: at most 64 KB of RAM.  DMA cannot reach DTCM on the
+     * STM32F7, so 4 KB of SRAM1 holds the USART3 receive ring and the
+     * DTCM window is 60 KB. */
+    RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 60K
+    SRAM1 (rwx) : ORIGIN = 0x20020000, LENGTH = 4K
+}
+
+/* BCON-003: no heap. */
+_Min_Heap_Size  = 0;
+_Min_Stack_Size = 0x1000;
+
+SECTIONS
+{
+    .isr_vector :
+    {
+        . = ALIGN(4);
+        KEEP(*(.isr_vector))
+        . = ALIGN(4);
+    } > FLASH
+
+    .text :
+    {
+        . = ALIGN(4);
+        *(.text .text.*)
+        *(.rodata .rodata.*)
+        KEEP(*(.init))
+        KEEP(*(.fini))
+        . = ALIGN(4);
+        _etext = .;
+    } > FLASH
+
+    .ARM.extab :
+    {
+        *(.ARM.extab* .gnu.linkonce.armextab.*)
+    } > FLASH
+
+    .ARM.exidx :
+    {
+        __exidx_start = .;
+        *(.ARM.exidx*)
+        __exidx_end = .;
+    } > FLASH
+
+    .preinit_array :
+    {
+        PROVIDE_HIDDEN(__preinit_array_start = .);
+        KEEP(*(.preinit_array*))
+        PROVIDE_HIDDEN(__preinit_array_end = .);
+    } > FLASH
+
+    .init_array :
+    {
+        PROVIDE_HIDDEN(__init_array_start = .);
+        KEEP(*(SORT(.init_array.*)))
+        KEEP(*(.init_array*))
+        PROVIDE_HIDDEN(__init_array_end = .);
+    } > FLASH
+
+    .fini_array :
+    {
+        PROVIDE_HIDDEN(__fini_array_start = .);
+        KEEP(*(SORT(.fini_array.*)))
+        KEEP(*(.fini_array*))
+        PROVIDE_HIDDEN(__fini_array_end = .);
+    } > FLASH
+
+    _sidata = LOADADDR(.data);
+
+    .data :
+    {
+        . = ALIGN(4);
+        _sdata = .;
+        *(.data .data.*)
+        . = ALIGN(4);
+        _edata = .;
+    } > RAM AT > FLASH
+
+    /* SWP-002: the bank swap and jump routine executes from DTCM because
+     * setting SYSCFG_MEMRMP.SWP_FB remaps the bank BOOT runs from.
+     * boot_ramfunc_init() copies it out of flash before first use. */
+    .ramfunc :
+    {
+        . = ALIGN(4);
+        _sramfunc = .;
+        *(.ramfunc .ramfunc.*)
+        . = ALIGN(4);
+        _eramfunc = .;
+    } > RAM AT > FLASH
+    _siramfunc = LOADADDR(.ramfunc);
+
+    .bss (NOLOAD) :
+    {
+        . = ALIGN(4);
+        _sbss = .;
+        *(.bss .bss.*)
+        *(COMMON)
+        . = ALIGN(4);
+        _ebss = .;
+    } > RAM
+
+    /* BGEN-010: the DMA receive ring must be in SRAM, not DTCM. */
+    .dma_buffer (NOLOAD) :
+    {
+        . = ALIGN(32);
+        _sdma_buffer = .;
+        KEEP(*(.dma_buffer .dma_buffer.*))
+        . = ALIGN(32);
+        _edma_buffer = .;
+    } > SRAM1
+
+    ._user_heap_stack (NOLOAD) :
+    {
+        . = ALIGN(8);
+        PROVIDE(end = .);
+        . = . + _Min_Heap_Size;
+        . = . + _Min_Stack_Size;
+        . = ALIGN(8);
+    } > RAM
+}
+
+/* LAY-001: the whole image (including the .data load image) stays inside
+ * bank 1 sectors 0-1. The build fails otherwise. */
+__boot_image_end = LOADADDR(.ramfunc) + SIZEOF(.ramfunc);
+ASSERT(__boot_image_end <= 0x08008000,
+       "LAY-001: BOOT image exceeds 32 KB (overlaps the metadata sector)")
+ASSERT(_eramfunc <= (ORIGIN(RAM) + LENGTH(RAM)),
+       "BNFR-001: BOOT DTCM exceeds 60 KB")
+ASSERT((_ebss + _Min_Heap_Size + _Min_Stack_Size) <=
+           (ORIGIN(RAM) + LENGTH(RAM)),
+       "BNFR-001: .bss plus the minimum stack does not fit in BOOT RAM")
+ASSERT(ORIGIN(RAM) + LENGTH(RAM) <= 0x2001FC00,
+       "A-9: BOOT RAM reaches the application no-init window (BOOT_NOINIT_ADDR)")
+ASSERT(SIZEOF(.dma_buffer) <= LENGTH(SRAM1),
+       "BNFR-001: DMA buffers exceed 4 KB")

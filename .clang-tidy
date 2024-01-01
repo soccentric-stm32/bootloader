@@ -1,0 +1,34 @@
+#
+# .clang-tidy - static analysis configuration for the A/B bootloader (BNFR-005)
+#
+# Only the project's own code (src, board) is reported on; the
+# STM32Cube and FreeRTOS headers are still parsed but never flagged.
+#
+# Run with:  make lint         (report findings)
+#            make lint-strict  (fail on any finding)
+#
+
+Checks: >
+  -*,
+  bugprone-*,
+  cppcoreguidelines-*,
+  misc-*,
+  modernize-use-nullptr,
+  performance-*,
+  portability-*,
+  -bugprone-reserved-identifier,
+  -clang-diagnostic-*,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -bugprone-easily-swappable-parameters,
+  -cppcoreguidelines-avoid-non-const-global-variables,
+  -cppcoreguidelines-macro-to-enum,
+  -misc-header-include-cycle,
+  -misc-include-cleaner,
+  -performance-no-int-to-ptr,
+  -cppcoreguidelines-pro-type-member-init,
+  -misc-no-recursion,
+  -performance-weak-try-catch
+
+# Restrict findings to the project's own sources and headers.
+HeaderFilterRegex: '^(/work/)?(src/(app|bsp|common)/.*|src/protocol/[^/]+|board/.*|tests/.*)\.[chs]$'
+FormatStyle: none

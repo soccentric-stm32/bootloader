@@ -1,0 +1,44 @@
+# Line endings: check out LF on every platform.
+#
+# Git for Windows defaults to core.autocrlf=true, so without this file a clone
+# on Windows gets CRLF in the working tree.  That breaks two things:
+#
+#   * scripts mounted into the build containers run under a Linux bash, which
+#     rejects the trailing carriage return ("\r: command not found");
+#   * anything that hashes or diffs working-tree bytes (contract and bundle
+#     checks, generated files) sees different bytes than the Linux/macOS CI.
+#
+# Storing and checking out LF everywhere keeps the bytes identical on Linux,
+# macOS and Windows.  Files that must keep CRLF (batch scripts) say so below.
+* text=auto eol=lf
+
+# Windows launchers are read by cmd.exe, so they keep the CRLF they ship with.
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# Binary assets and build products: never normalised, never diffed as text.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.icns  binary
+*.ttf   binary
+*.otf   binary
+*.woff  binary
+*.woff2 binary
+*.pdf   binary
+*.bin   binary
+*.elf   binary
+*.img   binary
+*.hex   binary
+*.o     binary
+*.a     binary
+*.so    binary
+*.dll   binary
+*.exe   binary
+*.msi   binary
+*.gz    binary
+*.zip   binary
+*.tar   binary
