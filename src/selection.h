@@ -23,7 +23,7 @@
 #define BOOT_TRIAL_SLOT_SHIFT     24U
 #define BOOT_TRIAL_SLOT_MASK      0x3UL
 #define BOOT_TRIAL_COUNT_SHIFT    26U
-#define BOOT_TRIAL_COUNT_MASK     0xFFUL
+#define BOOT_TRIAL_COUNT_MASK     0x3FUL
 
 /* RTC_BKP1R: application's "stay in BOOT" request. */
 #define BOOT_STAY_MAGIC           0x59415453UL   /* "STAY" */

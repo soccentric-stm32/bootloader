@@ -269,6 +269,28 @@ Note: the bank swap bit `SWP_FB` is volatile (it resets to 0); BOOT sets it on
 every boot from the metadata. No option byte is written by BOOT or by an
 application to switch slots.
 
+#### 6.1.1 Backup-register layout (normative)
+
+These words are the shared BOOT/application contract (`selection.h`,
+`boot_contract.h`, the Rust `board.rs`). A change requires a protocol minor
+bump and matching updates in every copy.
+
+| Register | Meaning | Bits |
+|---|---|---|
+| `RTC_BKP0R` | Trial counter (BOOT) | `0..23` magic `TRI` (`0x0054_5249`); `24..25` slot (1=A, 2=B, 0=none); `26..31` trial count (mask `0x3F`) |
+| `RTC_BKP1R` | "Stay in BOOT" request (application) | The whole word is `STAY` (`0x5941_5453`); any other value means no request |
+| `RTC_BKP2R` | Hand-over record (BOOT → application) | `0..23` magic `HND` (`0x0044_4E48`); `24..25` slot; bit `26` trial pending; `27..28` trial count |
+| `RTC_BKP3R` | Last boot outcome (BOOT) | `0..23` magic `OUT` (`0x004F_5554`); `24..27` outcome (0 unknown, 1 booted, 2 rolled back, 3 update mode); `28..29` rejected slot (0 none, 1 A, 2 B) |
+
+#### 6.1.2 Reserved application no-init window (normative)
+
+BOOT uses DTCM `0x2000_0000..0x2000_EFFF` (60 KB budget, including its stack)
+and SRAM1 `0x2002_0000..0x2002_0FFF` (USART3 DMA ring). Applications place
+their reset-surviving fault record in the reserved window
+`0x2001_FC00..0x2001_FFFF` (top 1 KB of DTCM) and start their main stack below
+it. BOOT never reads or writes that window; the applications assert the
+address and size in their linker scripts.
+
 ### 6.2 Selection
 
 | ID | Requirement | Method |
@@ -478,6 +500,18 @@ flash word is ever programmed twice.
 A record is present only when its magic and CRC are correct; an erased
 (`0xFF…`) area means "not present". A torn record (power lost while
 programming) fails its CRC and is treated as not present.
+
+Each record is exactly 32 bytes, little-endian:
+
+| Word | Contents |
+|---|---|
+| 0 | magic (see the table above) |
+| 1 | value: CRC32 read back (VERIFIED), sequence number (ACTIVATED), rejection reason (REJECTED), 0 (CONFIRMED) |
+| 2..6 | zero |
+| 7 | CRC-32/ISO-HDLC over bytes 0..27 |
+
+The `HEADER` at offset `0x000` is the 256-byte image header of §5.1; its
+CRC32 is the last word of those 256 bytes (`header_crc32`).
 
 ## Appendix C — Open items
 
