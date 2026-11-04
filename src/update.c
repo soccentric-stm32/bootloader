@@ -422,10 +422,11 @@ boot_error_t boot_update_activate(boot_update_t *update,
     if (!other_present || other_sequence == 0xFFFFFFFFUL) {
         other_sequence = 0U;
     }
-    uint32_t sequence = other_sequence + 1U;
-    if (sequence == 0xFFFFFFFFUL) {
-        sequence = 1U;
-    }
+    /* Saturate instead of wrapping: old code mapped 0xFFFFFFFE + 1 to 1,
+     * which is lower than the other slot and would never be selected. */
+    uint32_t sequence = (other_sequence >= 0xFFFFFFFEUL)
+                            ? 0xFFFFFFFEUL
+                            : other_sequence + 1U;
 
     (void)selection;
 
