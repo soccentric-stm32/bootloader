@@ -7,7 +7,7 @@
 | **Author** | Sandesh Ghimire <sandesh@soccentric.com> |
 | **Date** | 2026-11-03 |
 | **Status** | Draft for review |
-| **Hardware** | NUCLEO-F767ZI, STM32F767ZIT6 rev Z (see [soccentric-stm32-validation-firmware/Hardware.md](https://github.com/soccentric-stm32/soccentric-stm32-validation-firmware/blob/HEAD/Hardware.md)) |
+| **Hardware** | NUCLEO-F767ZI, STM32F767ZIT6 rev Z (see [validation-firmware/Hardware.md](https://github.com/soccentric-stm32/validation-firmware/blob/HEAD/Hardware.md)) |
 | **Software base** | HAL/LL from STM32CubeF7 v1.17.4 as shipped; bare metal (no RTOS); flatcc runtime for FlatBuffers |
 
 ---
@@ -96,11 +96,11 @@ replaces BOOT and both slots (§2.5).
 
 | ID | Document |
 |---|---|
-| [HW] | [soccentric-stm32-validation-firmware/Hardware.md](https://github.com/soccentric-stm32/soccentric-stm32-validation-firmware/blob/HEAD/Hardware.md) — board reference |
-| [HWVAL] | [soccentric-stm32-validation-firmware/SRS.md](https://github.com/soccentric-stm32/soccentric-stm32-validation-firmware/blob/HEAD/SRS.md) — SRS-HWVAL-F767, hardware validation firmware |
-| [DEMO] | [soccentric-stm32-application/SRS.md](https://github.com/soccentric-stm32/soccentric-stm32-application/blob/HEAD/SRS.md) — SRS-DEMO-F767, demo application |
-| [GUI] | [soccentric-stm32-validation-gui/SRS.md](https://github.com/soccentric-stm32/soccentric-stm32-validation-gui/blob/HEAD/SRS.md) — SRS-GUI-F767, host GUI |
-| [LINK] | [soccentric-stm32-validation-gui/SRS.md, Appendix A](https://github.com/soccentric-stm32/soccentric-stm32-validation-gui/blob/HEAD/SRS.md#appendix-a--hwlink-protocol) — HWLINK protocol (normative) |
+| [HW] | [validation-firmware/Hardware.md](https://github.com/soccentric-stm32/validation-firmware/blob/HEAD/Hardware.md) — board reference |
+| [HWVAL] | [validation-firmware/SRS.md](https://github.com/soccentric-stm32/validation-firmware/blob/HEAD/SRS.md) — SRS-HWVAL-F767, hardware validation firmware |
+| [DEMO] | [app-c-freertos/SRS.md](https://github.com/soccentric-stm32/app-c-freertos/blob/HEAD/SRS.md) — SRS-DEMO-F767, demo application |
+| [GUI] | [validation-gui/SRS.md](https://github.com/soccentric-stm32/validation-gui/blob/HEAD/SRS.md) — SRS-GUI-F767, host GUI |
+| [LINK] | [validation-gui/SRS.md, Appendix A](https://github.com/soccentric-stm32/validation-gui/blob/HEAD/SRS.md#appendix-a--hwlink-protocol) — HWLINK protocol (normative) |
 | [RM0410] | ST, STM32F76xxx/F77xxx reference manual (flash, dual-bank, SYSCFG, CRC) |
 | [DS11532] | ST, STM32F767 datasheet (flash timings) |
 | [UM1974] | ST, STM32 Nucleo-144 boards user manual |

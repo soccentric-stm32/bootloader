@@ -6,7 +6,7 @@
 # Rust and Zephyr applications (P3-8, section 4 of IMPROVEMENTS.md).
 #
 # Usage:
-#   tools/check_contracts.py [--app-repo ../soccentric-stm32-app]
+#   tools/check_contracts.py [--app-repo ../app-c-freertos]
 
 from __future__ import annotations
 

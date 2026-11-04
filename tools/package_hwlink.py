@@ -55,7 +55,7 @@ def package(output: pathlib.Path) -> int:
     readme.write_text(
         "# soccentric-hwlink\n\n"
         "Canonical HWLINK contract and host image tool, published from\n"
-        "`soccentric-stm32-bootloader`.\n\n"
+        "`bootloader`.\n\n"
         "Contents:\n"
         "- `protocol/hwlink.fbs` - FlatBuffers schema (protocol minor 2)\n"
         "- `hwlink/` - generated Python FlatBuffers package\n"
