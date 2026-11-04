@@ -44,18 +44,19 @@ bool boot_meta_read_record(boot_slot_t slot, uint32_t offset, uint32_t magic,
     const volatile uint32_t *record =
         (const volatile uint32_t *)(boot_meta_base(slot) + offset);
 
-    if (value != NULL) {
-        *value = record[1];
-    }
-    if (present == NULL) {
-        return false;
-    }
+    bool ok = record[0] == magic &&
+              boot_crc32((const void *)record,
+                         BOOT_META_RECORD_SIZE - 4U) ==
+                  record[RECORD_WORDS - 1U];
 
-    *present = record[0] == magic &&
-               boot_crc32((const void *)record,
-                          BOOT_META_RECORD_SIZE - 4U) ==
-                   record[RECORD_WORDS - 1U];
-    return *present;
+    /* Do not expose the erased value (0xFFFFFFFF) for an absent record. */
+    if (value != NULL) {
+        *value = ok ? record[1] : 0U;
+    }
+    if (present != NULL) {
+        *present = ok;
+    }
+    return ok;
 }
 
 bool boot_meta_write_header(boot_slot_t slot,
