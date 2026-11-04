@@ -45,6 +45,16 @@
 #define BOOT_RAM_START          0x20000000UL
 #define BOOT_RAM_END            0x20080000UL
 
+/* A-9: reserved no-init window for application fault records.  BOOT uses
+ * DTCM 0x20000000..0x2000EFFF (its 60 KB budget) and SRAM1
+ * 0x20020000..0x20020FFF (the USART3 DMA ring), so a record placed after
+ * the application's .bss can be cleared by BOOT.  Applications link
+ * .noinit to the top 1 KB of DTCM and start their main stack below it;
+ * BOOT never reads or writes this window. */
+#define BOOT_NOINIT_ADDR        0x2001FC00UL
+#define BOOT_NOINIT_SIZE        0x00000400UL
+#define BOOT_NOINIT_END         0x20020000UL
+
 /* Appendix B: the metadata sector is written append-only.  Each record
  * has its own 32-byte area; the last word is the CRC of the first 28. */
 #define BOOT_META_HEADER_OFFSET    0x000UL

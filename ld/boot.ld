@@ -147,5 +147,7 @@ ASSERT(__boot_image_end <= 0x08008000,
        "LAY-001: BOOT image exceeds 32 KB (overlaps the metadata sector)")
 ASSERT(_eramfunc <= (ORIGIN(RAM) + LENGTH(RAM)),
        "BNFR-001: BOOT DTCM exceeds 60 KB")
+ASSERT(ORIGIN(RAM) + LENGTH(RAM) <= 0x2001FC00,
+       "A-9: BOOT RAM reaches the application no-init window (BOOT_NOINIT_ADDR)")
 ASSERT(SIZEOF(.dma_buffer) <= LENGTH(SRAM1),
        "BNFR-001: DMA buffers exceed 4 KB")
