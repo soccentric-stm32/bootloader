@@ -96,7 +96,8 @@ rerun with `--no-options`.
    ```
 
    `bootctl.py` implements `info`, `update`, `activate`, `enter`, `reset`
-   and `set-baud` over HWLINK.  Add `--baud 921600` for the fast link.
+   and `set-baud` over HWLINK.  Add `--fast` to `update` to switch to
+   921600 inside the same session (BOOT always starts at 115200).
 
 3. On reset BOOT listens for 500 ms for a HWLINK `Hello` ([ENT-001]), then
    boots the valid slot with the highest activation sequence number.  B1

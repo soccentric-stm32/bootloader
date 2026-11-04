@@ -417,6 +417,8 @@ def cmd_update(link: Link, args) -> int:
           f"{image['image_size']} bytes, crc "
           f"0x{image['image_crc32']:08x}")
     link.hello()
+    if getattr(args, "fast", False):
+        change_baud(link, 921600)
 
     try:
         send_update_begin(link, image)
@@ -500,11 +502,11 @@ def cmd_reset(link: Link, _args) -> int:
     return 0
 
 
-def cmd_set_baud(link: Link, args) -> int:
-    link.hello()
+def change_baud(link: Link, rate: int) -> None:
+    """Send SetBaud and switch the host port inside the same session."""
     builder = flatbuffers.Builder(64)
     SetBaud.SetBaudStart(builder)
-    SetBaud.SetBaudAddRate(builder, args.rate)
+    SetBaud.SetBaudAddRate(builder, rate)
     body = SetBaud.SetBaudEnd(builder)
     response = link.request(finish(builder, 5, body))
     message = Message.Message.GetRootAs(response, 0)
@@ -513,9 +515,14 @@ def cmd_set_baud(link: Link, args) -> int:
         raise LinkError(f"SetBaud: {error_name(nak.Error())}: "
                         f"{text(nak.Detail())}")
     time.sleep(0.1)
-    link.ser.baudrate = args.rate
+    link.ser.baudrate = rate
     link.ser.reset_input_buffer()
-    print(f"SetBaud: {args.rate}")
+    print(f"SetBaud: {rate}")
+
+
+def cmd_set_baud(link: Link, args) -> int:
+    link.hello()
+    change_baud(link, args.rate)
     return 0
 
 
@@ -544,6 +551,8 @@ def main() -> int:
     update.add_argument("--chunk", type=int, default=1024)
     update.add_argument("--activate", action="store_true",
                         help="activate and reset after a successful verify")
+    update.add_argument("--fast", action="store_true",
+                        help="switch to 921600 baud for the upload")
     sub.add_parser("activate", help="activate the verified slot and reset")
     sub.add_parser("enter", help="ask a running application to enter BOOT")
     sub.add_parser("reset", help="leave BOOT and boot normally")
