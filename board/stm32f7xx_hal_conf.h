@@ -35,6 +35,8 @@
 #define HAL_GPIO_MODULE_ENABLED
 #define HAL_PWR_MODULE_ENABLED
 #define HAL_FLASH_MODULE_ENABLED    /* RCC needs the latency macros; UPD-005 */
+#define HAL_DMA_MODULE_ENABLED      /* USART3 receive ring; BGEN-010       */
+#define HAL_UART_MODULE_ENABLED     /* USART3; BGEN-004                    */
 
 #include "stm32f7xx_hal_rcc.h"
 #include "stm32f7xx_hal_gpio.h"
@@ -43,6 +45,8 @@
 #include "stm32f7xx_hal_pwr_ex.h"
 #include "stm32f7xx_hal_flash.h"
 #include "stm32f7xx_hal_flash_ex.h"
+#include "stm32f7xx_hal_dma.h"
+#include "stm32f7xx_hal_uart.h"
 
 #ifdef USE_FULL_ASSERT
 void assert_failed(uint8_t *file, uint32_t line);

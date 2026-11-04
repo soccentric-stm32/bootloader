@@ -4,39 +4,65 @@
  * Author:  Sandesh Ghimire <sandesh@soccentric.com>
  * Date:    2026-11-03
  * Target:  STM32F767ZIT6
- * SRS:     IMG-003, HND-001, HND-002
+ * SRS:     HND-001..HND-004, SWP-001/SWP-002
  *
- * Slot B (SWP_FB set from a RAM routine, SWP-002), the IWDG start
- * (HND-004) and the hand-over record in RTC_BKP2R (HND-003) are added
- * with sections 6 and 7.
+ * BOOT always reads the application vector table from the slot's physical
+ * address.  For slot B the final swap and jump run from the .ramfunc copy in
+ * DTCM because SWP_FB remaps the bank BOOT executes from.
  */
 
 #include "stm32f7xx_hal.h"
+#include "boot_board.h"
 #include "boot_layout.h"
+#include "clock.h"
 #include "handover.h"
+#include "uart3.h"
 
-bool boot_app_vectors_valid(uint32_t slot_base)
+extern void boot_swap_and_jump(uint32_t slot_b, uint32_t sp, uint32_t entry)
+    __attribute__((noreturn));
+
+extern uint32_t _sramfunc[];
+extern uint32_t _eramfunc[];
+extern uint32_t _siramfunc[];
+
+void boot_ramfunc_init(void)
 {
-    const volatile uint32_t *vec = (const volatile uint32_t *)slot_base;
-    uint32_t sp    = vec[0];
-    uint32_t entry = vec[1];
+    uint32_t *dst = _sramfunc;
+    const uint32_t *src = _siramfunc;
 
-    /* Thumb bit set, address inside the slot. */
-    uint32_t entry_addr = entry & ~1UL;
-    bool sp_ok    = (sp > BOOT_RAM_START) && (sp <= BOOT_RAM_END) &&
-                    ((sp & 0x7UL) == 0U);
-    bool entry_ok = ((entry & 1UL) != 0U) &&
-                    (entry_addr >= slot_base) &&
-                    (entry_addr < (slot_base + BOOT_SLOT_SIZE));
-
-    return sp_ok && entry_ok;
+    while (dst < _eramfunc) {
+        *dst++ = *src++;
+    }
+    __DSB();
+    __ISB();
 }
 
-void boot_handover(uint32_t app_base)
+static void leds_off(void)
 {
-    const volatile uint32_t *vec = (const volatile uint32_t *)app_base;
+    uint32_t mask = BOOT_LED1_PIN | BOOT_LED2_PIN | BOOT_LED3_PIN;
+    BOOT_LED1_PORT->BSRR = mask << 16U;
+}
+
+void boot_handover(boot_slot_t slot)
+{
+    uint32_t phys_base = boot_slot_base(slot);
+    const volatile uint32_t *vec = (const volatile uint32_t *)phys_base;
     uint32_t sp    = vec[0];
     uint32_t entry = vec[1];
+
+    /* HND-001: USART3, its DMA, the GPIO ports and the CRC unit.  This is
+     * done before SysTick is stopped because HAL_DMA_Abort uses HAL_GetTick
+     * for its timeout. */
+    NVIC_DisableIRQ(DMA1_Stream1_IRQn);
+    boot_uart3_deinit();
+
+    /* BGEN-008: all LEDs off at hand-over (GPIO clocks still on). */
+    leds_off();
+
+    __HAL_RCC_CRC_CLK_DISABLE();
+    __HAL_RCC_GPIOB_CLK_DISABLE();
+    __HAL_RCC_GPIOC_CLK_DISABLE();
+    __HAL_RCC_GPIOD_CLK_DISABLE();
 
     __disable_irq();
 
@@ -44,34 +70,19 @@ void boot_handover(uint32_t app_base)
     SysTick->CTRL = 0U;
     SysTick->LOAD = 0U;
     SysTick->VAL  = 0U;
-    for (uint32_t i = 0U; i < (sizeof(NVIC->ICER) / sizeof(NVIC->ICER[0])); i++) {
+    for (uint32_t i = 0U; i < (sizeof(NVIC->ICER) / sizeof(NVIC->ICER[0]));
+         i++) {
         NVIC->ICER[i] = 0xFFFFFFFFUL;
         NVIC->ICPR[i] = 0xFFFFFFFFUL;
     }
     SCB->ICSR = SCB_ICSR_PENDSTCLR_Msk;
 
-    /* Clock tree back to reset (HSI, PLL off, 0 WS) and every peripheral
-     * reset, which also turns the LEDs off (BGEN-008). */
-    (void)HAL_RCC_DeInit();
+    /* HND-001: clock tree back to reset (HSI, PLL off, 0 WS).  BGEN-007:
+     * never clear RCC_CSR, the application reports the reset cause. */
+    boot_clock_deinit();
     (void)HAL_DeInit();
 
-    /* HND-002 */
-    SCB->VTOR = app_base;
-    __DSB();
-    __ISB();
-
-    /* Nothing is pending any more; the application starts with interrupts
-     * enabled, as after a reset. */
-    __enable_irq();
-
-    __asm volatile(
-        "msr msp, %0 \n"
-        "bx  %1      \n"
-        :
-        : "r"(sp), "r"(entry)
-        : "memory");
-
-    while (1) {
-        /* not reached */
-    }
+    /* SWP-001/SWP-002: swap for slot B and enter the application from
+     * DTCM.  Never returns. */
+    boot_swap_and_jump(slot == BOOT_SLOT_B ? 1U : 0U, sp, entry);
 }

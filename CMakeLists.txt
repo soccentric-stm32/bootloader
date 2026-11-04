@@ -48,7 +48,10 @@ endif()
 # --- Build metadata (BGEN-002) ---------------------------------------------
 execute_process(COMMAND git -C ${CMAKE_CURRENT_SOURCE_DIR} rev-parse --short=12 HEAD
     OUTPUT_VARIABLE BOOT_GIT_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-string(TIMESTAMP BOOT_BUILD_DATE "%Y-%m-%d %H:%M:%S")
+if(NOT BOOT_GIT_COMMIT)
+    set(BOOT_GIT_COMMIT "unknown")
+endif()
+string(TIMESTAMP BOOT_BUILD_DATE "%Y-%m-%d %H:%M:%S" UTC)
 
 # --- Toolchain flags --------------------------------------------------------
 set(CPU_FLAGS -mcpu=cortex-m7 -mthumb -mfpu=fpv5-d16 -mfloat-abi=hard)
@@ -58,6 +61,9 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 # Size-optimised in every build type: BOOT must fit in 32 KB (BCON-005).
 add_compile_options(${CPU_FLAGS} -Wall -Wextra -Werror -ffunction-sections -fdata-sections)
+# flatcc runtime allocation hooks (BCON-003: no malloc) are visible wherever
+# the runtime headers expand FLATCC_ALLOC.  Applied to C sources only.
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -include ${CMAKE_SOURCE_DIR}/src/flatcc_port.h")
 # BCON-003: no dynamic memory and no stdio, so no syscall layer is linked.
 add_link_options(${CPU_FLAGS} -Wl,--gc-sections -Wl,--cref
     -Wl,-Map=${CMAKE_BINARY_DIR}/boot.map
@@ -79,6 +85,8 @@ add_compile_definitions(
     BOOT_BUILD_DATE="${BOOT_BUILD_DATE}")
 
 include_directories(src board
+    "${CMAKE_SOURCE_DIR}/src/generated"
+    "${CMAKE_SOURCE_DIR}/third_party/flatcc/include"
     "${CUBE_ROOT}/Drivers/CMSIS/Include"
     "${CUBE_ROOT}/Drivers/CMSIS/Device/ST/STM32F7xx/Include"
     "${CUBE_ROOT}/Drivers/STM32F7xx_HAL_Driver/Inc")
@@ -94,18 +102,61 @@ set(HAL_SOURCES
     "${CUBE_ROOT}/Drivers/STM32F7xx_HAL_Driver/Src/stm32f7xx_hal_pwr.c"
     "${CUBE_ROOT}/Drivers/STM32F7xx_HAL_Driver/Src/stm32f7xx_hal_pwr_ex.c"
     "${CUBE_ROOT}/Drivers/STM32F7xx_HAL_Driver/Src/stm32f7xx_hal_flash.c"
-    "${CUBE_ROOT}/Drivers/STM32F7xx_HAL_Driver/Src/stm32f7xx_hal_flash_ex.c")
+    "${CUBE_ROOT}/Drivers/STM32F7xx_HAL_Driver/Src/stm32f7xx_hal_flash_ex.c"
+    "${CUBE_ROOT}/Drivers/STM32F7xx_HAL_Driver/Src/stm32f7xx_hal_dma.c"
+    "${CUBE_ROOT}/Drivers/STM32F7xx_HAL_Driver/Src/stm32f7xx_hal_dma_ex.c"
+    "${CUBE_ROOT}/Drivers/STM32F7xx_HAL_Driver/Src/stm32f7xx_hal_uart.c"
+    "${CUBE_ROOT}/Drivers/STM32F7xx_HAL_Driver/Src/stm32f7xx_hal_uart_ex.c")
+
+# The generated flatcc headers use compact macro formatting that trips
+# -Wmisleading-indentation in the one translation unit that includes them.
+set_source_files_properties(src/proto.c PROPERTIES
+    COMPILE_OPTIONS "-Wno-misleading-indentation")
+
+# flatcc 0.6.1 runtime as released (BCON-002).  Only builder, verifier,
+# emitter and refmap are linked; JSON support is not used.
+set(FLATCC_ROOT "${CMAKE_SOURCE_DIR}/third_party/flatcc")
+set(FLATCC_SOURCES
+    "${FLATCC_ROOT}/src/runtime/builder.c"
+    "${FLATCC_ROOT}/src/runtime/verifier.c"
+    "${FLATCC_ROOT}/src/runtime/emitter.c"
+    "${FLATCC_ROOT}/src/runtime/refmap.c")
 
 set(PROJECT_SOURCES
     src/main.c
     src/handover.c
-    src/fault.c)
+    src/fault.c
+    src/clock.c
+    src/crc32.c
+    src/flash.c
+    src/image.c
+    src/iwdg.c
+    src/metadata.c
+    src/proto.c
+    src/selection.c
+    src/uart3.c
+    src/update.c
+    src/hwlink.c
+    src/flatcc_port.c
+    src/swap_jump.S)
 
 set(DEVICE_SOURCES
     "${CUBE_ROOT}/Drivers/CMSIS/Device/ST/STM32F7xx/Source/Templates/system_stm32f7xx.c"
     "${CUBE_ROOT}/Drivers/CMSIS/Device/ST/STM32F7xx/Source/Templates/gcc/startup_stm32f767xx.s")
 
-add_executable(boot.elf ${PROJECT_SOURCES} ${HAL_SOURCES} ${DEVICE_SOURCES})
+add_executable(boot.elf ${PROJECT_SOURCES} ${HAL_SOURCES} ${DEVICE_SOURCES}
+    ${FLATCC_SOURCES})
+target_compile_definitions(boot.elf PRIVATE
+    NDEBUG=1
+    BOOT_FLATCC_HEAP_SIZE=8192
+    FLATCC_ALLOC=boot_flatcc_alloc
+    FLATCC_FREE=boot_flatcc_free
+    FLATCC_REALLOC=boot_flatcc_realloc
+    FLATCC_CALLOC=boot_flatcc_calloc
+    FLATCC_ALIGNED_ALLOC=boot_flatcc_aligned_alloc
+    FLATCC_ALIGNED_FREE=boot_flatcc_aligned_free
+    FLATCC_EMITTER_ALLOC=boot_flatcc_alloc
+    FLATCC_EMITTER_FREE=boot_flatcc_free)
 
 # LAY-001: BOOT lives in bank 1 sectors 0-1 (32 KB); the linker script
 # fails the build if the image grows past 0x08007FFF.
@@ -124,11 +175,18 @@ endif()
 # The target runs with the build dir as CWD, so make source paths absolute.
 set(BOOT_LINT_SOURCES)
 foreach(_src ${PROJECT_SOURCES})
-    list(APPEND BOOT_LINT_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/${_src}")
+    if(_src MATCHES "\\.c$")
+        list(APPEND BOOT_LINT_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/${_src}")
+    endif()
 endforeach()
+# clang-tidy runs the host clang but needs the newlib headers used by the
+# arm-none-eabi toolchain in the container; otherwise <string.h> is missing.
+set(BOOT_LINT_EXTRA_ARGS --extra-arg=-isystem
+    --extra-arg=/usr/lib/arm-none-eabi/include)
+
 add_custom_target(clang-tidy
     COMMAND ${CLANG_TIDY} -quiet -p ${CMAKE_BINARY_DIR} ${BOOT_LINT_FLAGS}
-            ${BOOT_LINT_SOURCES}
+            ${BOOT_LINT_EXTRA_ARGS} ${BOOT_LINT_SOURCES}
     COMMENT "Running clang-tidy over the project sources"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     VERBATIM)

@@ -20,8 +20,11 @@ MEMORY
 {
     /* Bank 1 sectors 0-1 only (LAY-001, BCON-005). */
     FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 32K
-    /* BNFR-001: at most 64 KB of RAM; the lower half of DTCM. */
-    RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 64K
+    /* BNFR-001: at most 64 KB of RAM.  DMA cannot reach DTCM on the
+     * STM32F7, so 4 KB of SRAM1 holds the USART3 receive ring and the
+     * DTCM window is 60 KB. */
+    RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 60K
+    SRAM1 (rwx) : ORIGIN = 0x20020000, LENGTH = 4K
 }
 
 /* BCON-003: no heap. */
@@ -94,6 +97,19 @@ SECTIONS
         _edata = .;
     } > RAM AT > FLASH
 
+    /* SWP-002: the bank swap and jump routine executes from DTCM because
+     * setting SYSCFG_MEMRMP.SWP_FB remaps the bank BOOT runs from.
+     * boot_ramfunc_init() copies it out of flash before first use. */
+    .ramfunc :
+    {
+        . = ALIGN(4);
+        _sramfunc = .;
+        *(.ramfunc .ramfunc.*)
+        . = ALIGN(4);
+        _eramfunc = .;
+    } > RAM AT > FLASH
+    _siramfunc = LOADADDR(.ramfunc);
+
     .bss (NOLOAD) :
     {
         . = ALIGN(4);
@@ -103,6 +119,16 @@ SECTIONS
         . = ALIGN(4);
         _ebss = .;
     } > RAM
+
+    /* BGEN-010: the DMA receive ring must be in SRAM, not DTCM. */
+    .dma_buffer (NOLOAD) :
+    {
+        . = ALIGN(32);
+        _sdma_buffer = .;
+        KEEP(*(.dma_buffer .dma_buffer.*))
+        . = ALIGN(32);
+        _edma_buffer = .;
+    } > SRAM1
 
     ._user_heap_stack (NOLOAD) :
     {
@@ -116,6 +142,10 @@ SECTIONS
 
 /* LAY-001: the whole image (including the .data load image) stays inside
  * bank 1 sectors 0-1. The build fails otherwise. */
-__boot_image_end = LOADADDR(.data) + SIZEOF(.data);
+__boot_image_end = LOADADDR(.ramfunc) + SIZEOF(.ramfunc);
 ASSERT(__boot_image_end <= 0x08008000,
        "LAY-001: BOOT image exceeds 32 KB (overlaps the metadata sector)")
+ASSERT(_eramfunc <= (ORIGIN(RAM) + LENGTH(RAM)),
+       "BNFR-001: BOOT DTCM exceeds 60 KB")
+ASSERT(SIZEOF(.dma_buffer) <= LENGTH(SRAM1),
+       "BNFR-001: DMA buffers exceed 4 KB")
