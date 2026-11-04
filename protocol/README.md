@@ -2,8 +2,16 @@
 
 `hwlink.fbs` is the FlatBuffers schema for the HWLINK protocol
 (SRS-GUI-F767 Appendix A).  It is the single source for the C headers in
-`../src/generated` and the Python package in `../tools/generated`, and is
-shared unchanged with HWVAL, the GUI and the applications.
+`../src/generated` and the Python package in `../tools/generated`.
+
+The copies in the other repositories are **not** identical yet.  The GUI
+adds the HWVAL tables and `OperatorPromptDone`; the validation firmware adds
+the HWVAL tables and `OperatorPromptDone`; the C, Rust and Zephyr
+applications omit `ImageHeader.header_crc32`.  The message set used by BOOT
+and the applications is wire-compatible (same union indices, same message
+layouts), and every component now reports protocol minor 1.  Merging the
+copies into one canonical schema is tracked as B-1 in the workspace
+`task.md`.
 
 The C headers were generated with flatcc 0.6.1:
 
