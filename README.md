@@ -91,11 +91,12 @@ rerun with `--no-options`.
    pip install pyserial        # only host dependency; flatbuffers is vendored
    tools/bootctl.py info
    tools/bootctl.py update build/app.img --activate
+   tools/bootctl.py enter          # running application -> BOOT
    tools/bootctl.py reset
    ```
 
-   `bootctl.py` implements `info`, `update`, `activate`, `reset` and
-   `set-baud` over HWLINK.  Add `--baud 921600` for the fast link.
+   `bootctl.py` implements `info`, `update`, `activate`, `enter`, `reset`
+   and `set-baud` over HWLINK.  Add `--baud 921600` for the fast link.
 
 3. On reset BOOT listens for 500 ms for a HWLINK `Hello` ([ENT-001]), then
    boots the valid slot with the highest activation sequence number.  B1

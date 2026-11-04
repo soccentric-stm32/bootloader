@@ -31,10 +31,10 @@ sys.path.insert(0, str(TOOLS / "generated"))
 sys.path.insert(0, str(TOOLS / "vendor"))
 
 import flatbuffers  # noqa: E402
-from hwlink import Ack, Activate, BootInfo, BootOutcome, Error, \
-    GetBootInfo, Hello, HelloReply, ImageHeader, Message, Nak, Progress, \
-    Reset, Role, SetBaud, Slot, UpdateAbort, UpdateBegin, UpdateData, \
-    UpdateEnd, UpdateResult  # noqa: E402
+from hwlink import Ack, Activate, BootInfo, BootOutcome, EnterBootloader, \
+    Error, GetBootInfo, Hello, HelloReply, ImageHeader, Message, Nak, \
+    Progress, Reset, Role, SetBaud, Slot, UpdateAbort, UpdateBegin, \
+    UpdateData, UpdateEnd, UpdateResult  # noqa: E402
 
 PROTOCOL_MAJOR = 1
 PROTOCOL_MINOR = 1
@@ -459,6 +459,22 @@ def cmd_update(link: Link, args) -> int:
     return 0
 
 
+def cmd_enter(link: Link, _args) -> int:
+    """Ask a running demo application to reset into the bootloader."""
+    link.hello()
+    builder = flatbuffers.Builder(16)
+    EnterBootloader.EnterBootloaderStart(builder)
+    body = EnterBootloader.EnterBootloaderEnd(builder)
+    response = link.request(finish(builder, 22, body))
+    message = Message.Message.GetRootAs(response, 0)
+    if message.BodyType() == 7:  # Nak
+        nak = as_table(message.Body(), Nak.Nak)
+        raise LinkError(f"EnterBootloader: {error_name(nak.Error())}: "
+                        f"{text(nak.Detail())}")
+    print("EnterBootloader: ok, the application is resetting into BOOT")
+    return 0
+
+
 def cmd_activate(link: Link, _args) -> int:
     link.hello()
     builder = flatbuffers.Builder(32)
@@ -529,6 +545,7 @@ def main() -> int:
     update.add_argument("--activate", action="store_true",
                         help="activate and reset after a successful verify")
     sub.add_parser("activate", help="activate the verified slot and reset")
+    sub.add_parser("enter", help="ask a running application to enter BOOT")
     sub.add_parser("reset", help="leave BOOT and boot normally")
     set_baud = sub.add_parser("set-baud", help="switch the link baud rate")
     set_baud.add_argument("rate", type=int, choices=(115200, 921600))
@@ -552,6 +569,7 @@ def main() -> int:
         "info": cmd_info,
         "update": cmd_update,
         "activate": cmd_activate,
+        "enter": cmd_enter,
         "reset": cmd_reset,
         "set-baud": cmd_set_baud,
     }
