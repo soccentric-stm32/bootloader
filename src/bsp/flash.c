@@ -84,6 +84,11 @@ static void flash_end(void)
 
 static bool erase_sector(uint32_t sector)
 {
+    /* A-01: the factory identity record lives in bank 2 sector 13.  BOOT
+     * must never erase it, including during slot/meta updates. */
+    if (sector == BOOT_IDENTITY_SECTOR) {
+        return false;
+    }
     FLASH_EraseInitTypeDef erase = {0};
     uint32_t error = 0U;
 

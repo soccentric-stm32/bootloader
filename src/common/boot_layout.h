@@ -40,6 +40,15 @@
 #define BOOT_META_A_BASE        (BOOT_BANK1_BASE + BOOT_META_OFFSET)
 #define BOOT_META_B_BASE        (BOOT_BANK2_BASE + BOOT_META_OFFSET)
 
+/* A-01: factory identity/provisioning area.  Bank 2 sector 13 is reserved
+ * for the PRV1 record.  BOOT never erases or writes this sector.  With
+ * SWP_FB = 1 the same physical sector appears at 0x08004000. */
+#define BOOT_IDENTITY_OFFSET    0x00004000UL
+#define BOOT_IDENTITY_SIZE      0x00004000UL
+#define BOOT_IDENTITY_BASE      (BOOT_BANK2_BASE + BOOT_IDENTITY_OFFSET)
+#define BOOT_IDENTITY_SWAPPED   (BOOT_BANK1_BASE + BOOT_IDENTITY_OFFSET)
+#define BOOT_IDENTITY_SECTOR    13U   /* bank 2, sector index 1 */
+
 /* IMG-003: an application's initial stack pointer must lie in internal
  * RAM (DTCM + SRAM1 + SRAM2 are contiguous); the top is inclusive. */
 #define BOOT_RAM_START          0x20000000UL
