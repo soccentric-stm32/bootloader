@@ -20,6 +20,7 @@
 
 import argparse
 import glob
+import json
 import pathlib
 import struct
 import sys
@@ -31,10 +32,14 @@ sys.path.insert(0, str(TOOLS / "generated"))
 sys.path.insert(0, str(TOOLS / "vendor"))
 
 import flatbuffers  # noqa: E402
-from hwlink import Ack, Activate, BootInfo, BootOutcome, EnterBootloader, \
-    Error, GetBootInfo, Hello, HelloReply, ImageHeader, Message, Nak, \
-    Progress, Reset, Role, SetBaud, Slot, UpdateAbort, UpdateBegin, \
-    UpdateData, UpdateEnd, UpdateResult  # noqa: E402
+from hwlink import Ack, Activate, BootInfo, EnterBootloader, GetBootInfo, \
+    Hello, HelloReply, ImageHeader, Message, Nak, Progress, Reset, SetBaud, \
+    UpdateAbort, UpdateBegin, UpdateData, UpdateEnd, UpdateResult  # noqa: E402
+# Enums live in modules of the same name; import the classes themselves.
+from hwlink.BootOutcome import BootOutcome  # noqa: E402
+from hwlink.Error import Error  # noqa: E402
+from hwlink.Role import Role  # noqa: E402
+from hwlink.Slot import Slot  # noqa: E402
 
 PROTOCOL_MAJOR = 1
 PROTOCOL_MINOR = 1
@@ -42,11 +47,18 @@ HWLINK_FLAG_RESPONSE = 1 << 0
 HWLINK_FLAG_EVENT = 1 << 1
 MAX_FRAME = 2048
 HEADER_SIZE = 256
+VERBOSE = False
 LOAD_ADDRESS = 0x0800C000
 SLOT_SIZE = 0x000F4000
 IMAGE_MAGIC = 0x48574249
 
 IMAGE_HEADER = struct.Struct("<IHHIIIIIII20s32s164sI")
+
+
+def vprint(*args) -> None:
+    """Print only with --verbose."""
+    if VERBOSE:
+        print(*args, flush=True)
 
 
 def error_name(value: int) -> str:
@@ -71,6 +83,10 @@ def error_name(value: int) -> str:
 
 def slot_name(value: int) -> str:
     return {Slot.A: "A", Slot.B: "B"}.get(value, "?")
+
+
+def version_text(value: int) -> str:
+    return f"{(value >> 24) & 0xFF}.{(value >> 16) & 0xFF}.{value & 0xFF}"
 
 
 def outcome_name(value: int) -> str:
@@ -175,6 +191,7 @@ class Link:
         self.ser = serial.Serial(port, baud, timeout=0.05, write_timeout=2)
         self.seq = 0
         self.buffer = bytearray()
+        self.verbose = False
 
     def close(self):
         if self.ser is not None and self.ser.is_open:
@@ -187,8 +204,12 @@ class Link:
         return self.seq
 
     def _send(self, payload: bytes, seq: int):
-        self.ser.write(cobs_encode(build_raw(payload, seq)))
+        frame = cobs_encode(build_raw(payload, seq))
+        self.ser.write(frame)
         self.ser.flush()
+        if self.verbose:
+            print(f"  tx seq {seq:5d}  payload {len(payload):4d} B  "
+                  f"frame {len(frame):4d} B", flush=True)
 
     def _read_frame(self, deadline: float):
         while time.monotonic() < deadline:
@@ -245,6 +266,9 @@ class Link:
                     continue
                 if not (flags & HWLINK_FLAG_RESPONSE) or frame_seq != seq:
                     continue
+                if self.verbose:
+                    print(f"  rx seq {frame_seq:5d}  payload "
+                          f"{len(response):4d} B", flush=True)
                 return response
             if attempt == retries:
                 break
@@ -306,14 +330,42 @@ def parse_image(path: pathlib.Path):
     }
 
 
-def cmd_info(link: Link, _args) -> int:
-    reply = link.hello()
-    print(f"firmware     : {text(reply.FirmwareName())} "
-          f"{text(reply.Version())} ({text(reply.Commit())})")
-    print(f"build        : {text(reply.BuildTime())}")
-    print(f"flash mode   : {'DUAL_BANK' if reply.FlashMode() == 2 else 'SINGLE_BANK'}")
-    print(f"detail       : {text(reply.Detail())}")
+def boot_info_dict(reply, info) -> dict:
+    """Machine-readable form of HelloReply + BootInfo (info --json)."""
+    slots = []
+    for index in range(info.SlotsLength()):
+        slot = info.Slots(index)
+        slots.append({
+            "slot": slot_name(slot.Slot()),
+            "present": bool(slot.Present()),
+            "valid": bool(slot.Valid()),
+            "pending": bool(slot.Pending()),
+            "confirmed": bool(slot.Confirmed()),
+            "rejected": bool(slot.Rejected()),
+            "sequence": slot.Sequence(),
+            "trial_count": slot.TrialCount(),
+            "version": version_text(slot.Version()),
+            "image_size": slot.ImageSize(),
+            "build_timestamp": slot.BuildTimestamp(),
+            "git_commit": text(slot.GitCommit()),
+            "name": text(slot.Name()),
+            "detail": text(slot.Detail()),
+        })
+    return {
+        "firmware": text(reply.FirmwareName()),
+        "version": text(reply.Version()),
+        "commit": text(reply.Commit()),
+        "build_time": text(reply.BuildTime()),
+        "flash_mode": "DUAL_BANK" if reply.FlashMode() == 2 else "SINGLE_BANK",
+        "detail": text(reply.Detail()),
+        "active_slot": slot_name(info.ActiveSlot()),
+        "last_outcome": outcome_name(info.LastOutcome()),
+        "rejected_slot": slot_name(info.RejectedSlot()),
+        "slots": slots,
+    }
 
+
+def read_boot_info(link: Link):
     builder = flatbuffers.Builder(64)
     GetBootInfo.GetBootInfoStart(builder)
     body = GetBootInfo.GetBootInfoEnd(builder)
@@ -321,7 +373,22 @@ def cmd_info(link: Link, _args) -> int:
     message = Message.Message.GetRootAs(response, 0)
     if message.BodyType() != 12:   # BootInfo
         raise LinkError("device did not answer GetBootInfo with BootInfo")
-    info = as_table(message.Body(), BootInfo.BootInfo)
+    return as_table(message.Body(), BootInfo.BootInfo)
+
+
+def cmd_info(link: Link, args) -> int:
+    reply = link.hello()
+    info = read_boot_info(link)
+
+    if getattr(args, "json", False):
+        print(json.dumps(boot_info_dict(reply, info), indent=2))
+        return 0
+
+    print(f"firmware     : {text(reply.FirmwareName())} "
+          f"{text(reply.Version())} ({text(reply.Commit())})")
+    print(f"build        : {text(reply.BuildTime())}")
+    print(f"flash mode   : {'DUAL_BANK' if reply.FlashMode() == 2 else 'SINGLE_BANK'}")
+    print(f"detail       : {text(reply.Detail())}")
     print(f"active slot  : {slot_name(info.ActiveSlot())}")
     print(f"last outcome : {outcome_name(info.LastOutcome())}")
     print(f"rejected slot: {slot_name(info.RejectedSlot())}")
@@ -332,10 +399,8 @@ def cmd_info(link: Link, _args) -> int:
               f"pending={slot.Pending()} confirmed={slot.Confirmed()} "
               f"rejected={slot.Rejected()} seq={slot.Sequence()} "
               f"trial={slot.TrialCount()}")
-        print(f"  version {((slot.Version() >> 24) & 0xFF)}."
-              f"{((slot.Version() >> 16) & 0xFF)}."
-              f"{slot.Version() & 0xFF}, size {slot.ImageSize()}, "
-              f"build {slot.BuildTimestamp()}")
+        print(f"  version {version_text(slot.Version())}, "
+              f"size {slot.ImageSize()}, build {slot.BuildTimestamp()}")
         print(f"  name {text(slot.Name())} commit {text(slot.GitCommit())}")
         print(f"  detail: {text(slot.Detail())}")
     return 0
@@ -409,20 +474,73 @@ def send_update_abort(link: Link) -> None:
         pass
 
 
-def cmd_update(link: Link, args) -> int:
-    image = parse_image(pathlib.Path(args.image))
-    print(f"image: {args.image} version "
-          f"{((image['version'] >> 24) & 0xFF)}."
-          f"{((image['version'] >> 16) & 0xFF)}.{image['version'] & 0xFF}, "
+SLOT_BASE = {"A": 0x0800C000, "B": 0x0810C000}
+
+
+def slot_base(slot: str | None) -> int:
+    return SLOT_BASE.get(slot or "A", SLOT_BASE["A"])
+
+
+def print_image(image, path: str) -> None:
+    print(f"image        : {path} version "
+          f"{version_text(image['version'])}, "
           f"{image['image_size']} bytes, crc "
           f"0x{image['image_crc32']:08x}")
-    link.hello()
+    if not VERBOSE:
+        return
+    name = image["name"].rstrip(b"\0").decode("ascii", "replace")
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S",
+                          time.gmtime(image["build_timestamp"]))
+    vprint(f"  header       : 256 B, load 0x{image['load_address']:08x}, "
+           f"entry 0x{image['entry_address']:08x}")
+    vprint(f"  build time   : {stamp}")
+    vprint(f"  name         : {name}")
+    vprint(f"  git commit   : {image['git_commit'].hex()}")
+    vprint(f"  header crc32 : 0x{image['header_crc32']:08x}")
+    vprint(f"  body         : {len(image['body'])} B")
+
+
+def print_boot_target(link: Link) -> str | None:
+    info = read_boot_info(link)
+    active = slot_name(info.ActiveSlot())
+    target = "B" if active == "A" else "A"
+    vprint(f"boot info    : active {active}, target {target} "
+           f"@ 0x{slot_base(target):08x}")
+    for index in range(info.SlotsLength()):
+        slot = info.Slots(index)
+        vprint(f"  slot {slot_name(slot.Slot())}: present={slot.Present()} "
+               f"valid={slot.Valid()} pending={slot.Pending()} "
+               f"confirmed={slot.Confirmed()} rejected={slot.Rejected()} "
+               f"seq={slot.Sequence()}")
+    return target
+
+
+def cmd_update(link: Link, args) -> int:
+    image = parse_image(pathlib.Path(args.image))
+    print_image(image, args.image)
+    reply = link.hello()
+    if VERBOSE:
+        mode = "DUAL_BANK" if reply.FlashMode() == 2 else "SINGLE_BANK"
+        vprint(f"hello        : {text(reply.FirmwareName())} "
+               f"{text(reply.Version())} ({text(reply.Commit())}), "
+               f"protocol {reply.ProtocolMajor()}.{reply.ProtocolMinor()}, "
+               f"flash mode {mode}")
+    target = None
+    if VERBOSE:
+        try:
+            target = print_boot_target(link)
+        except LinkError as error:
+            vprint(f"boot info    : unavailable ({error})")
+
     if getattr(args, "fast", False):
         change_baud(link, 921600)
 
+    started = time.monotonic()
     try:
         send_update_begin(link, image)
         print("UpdateBegin: ok")
+        vprint(f"  header written to the metadata sector; "
+               f"{image['image_size']} bytes to flash")
 
         body = image["body"]
         offset = 0
@@ -432,9 +550,22 @@ def cmd_update(link: Link, args) -> int:
             next_offset = send_update_data(link, offset, chunk)
             if next_offset == offset:
                 raise LinkError(f"device did not advance from offset {offset}")
+            if VERBOSE:
+                elapsed = max(time.monotonic() - started, 1e-6)
+                rate = offset / elapsed / 1024
+                preview = " ".join(f"{b:02x}" for b in chunk[:12])
+                if len(chunk) > 12:
+                    preview += " ..."
+                address = (f"@0x{slot_base(target) + offset:08x} "
+                           if target else "")
+                vprint(f"  {offset:08x}  {len(chunk):4d} B {address}"
+                       f"-> {next_offset:08x}  "
+                       f"{100 * next_offset / len(body):6.1f}%  "
+                       f"{rate:7.1f} KB/s  {preview}")
             offset = next_offset
             percent = (100 * offset / len(body)) if body else 100
-            if percent >= last_report + 10 or offset == len(body):
+            if not VERBOSE and (percent >= last_report + 10 or
+                                offset == len(body)):
                 print(f"  written {offset}/{len(body)} ({percent:.0f}%)",
                       flush=True)
                 last_report = percent
@@ -442,8 +573,10 @@ def cmd_update(link: Link, args) -> int:
         builder = flatbuffers.Builder(32)
         UpdateEnd.UpdateEndStart(builder)
         body_end = UpdateEnd.UpdateEndEnd(builder)
+        verify_start = time.monotonic()
         response = link.request(finish(builder, 15, body_end),
                                 timeout=max(link.timeout, 10.0))
+        verify_time = time.monotonic() - verify_start
         message = Message.Message.GetRootAs(response, 0)
         if message.BodyType() != 16:   # UpdateResult
             raise LinkError("UpdateEnd: unexpected reply")
@@ -452,6 +585,12 @@ def cmd_update(link: Link, args) -> int:
             raise LinkError(f"UpdateEnd: {error_name(result.Error())}: "
                             f"{text(result.Detail())}")
         print(f"UpdateEnd: verified, CRC 0x{result.ImageCrc32():08x}")
+        if VERBOSE:
+            total = time.monotonic() - started
+            rate = image["image_size"] / total / 1024 if total else 0
+            vprint(f"  verified {image['image_size']} bytes in "
+                   f"{verify_time:.2f} s; flash+verify {total:.2f} s, "
+                   f"{rate:.1f} KB/s")
     except LinkError:
         send_update_abort(link)
         raise
@@ -543,9 +682,13 @@ def main() -> int:
     parser.add_argument("--baud", type=int, default=115200,
                         choices=(115200, 921600))
     parser.add_argument("--timeout", type=float, default=10.0)
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="log every chunk, offset, flash address and frame")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("info", help="show HelloReply and BootInfo")
+    info = sub.add_parser("info", help="show HelloReply and BootInfo")
+    info.add_argument("--json", action="store_true",
+                      help="print machine-readable JSON")
     update = sub.add_parser("update", help="write and verify an image")
     update.add_argument("image")
     update.add_argument("--chunk", type=int, default=1024)
@@ -563,9 +706,15 @@ def main() -> int:
     if args.command == "update" and (args.chunk < 1 or args.chunk > 1024):
         parser.error("--chunk must be 1..1024")
 
+    global VERBOSE
+    # Keep --json output machine-readable even if -v is also given.
+    VERBOSE = args.verbose and not (
+        args.command == "info" and getattr(args, "json", False))
+
     try:
         port = args.port or find_port()
         link = Link(port, args.baud, args.timeout)
+        link.verbose = VERBOSE
     except ImportError:
         print("bootctl: pyserial is required: pip install pyserial",
               file=sys.stderr)
