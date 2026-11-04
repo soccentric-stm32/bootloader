@@ -54,10 +54,17 @@ static bool boot_flash_is_dual_bank(void)
     return (FLASH->OPTCR & FLASH_OPTCR_nDBANK) == 0U;
 }
 
-/* ENT-003: B1 held at reset keeps the board in BOOT. */
+/* ENT-003: B1 held at reset keeps the board in BOOT.  Sample it for about
+ * 10 ms instead of once, so a bounce or a noise spike cannot trigger it. */
 static bool boot_button_held(void)
 {
-    return HAL_GPIO_ReadPin(BOOT_BTN1_PORT, BOOT_BTN1_PIN) == GPIO_PIN_SET;
+    for (uint32_t i = 0U; i < 10U; i++) {
+        if (HAL_GPIO_ReadPin(BOOT_BTN1_PORT, BOOT_BTN1_PIN) != GPIO_PIN_SET) {
+            return false;
+        }
+        HAL_Delay(1U);
+    }
+    return true;
 }
 
 static void boot_error_loop(void)
