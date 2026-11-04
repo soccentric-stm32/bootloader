@@ -157,7 +157,12 @@ int main(void)
                                                   : GPIO_PIN_SET);
 
     bool force_update = !boot_selection.active_valid;
-    force_update = force_update || boot_selection_take_stay_request();
+    /* ENT-002: always read (and clear) the request, even when an earlier
+     * condition already forced update mode, or the magic would survive
+     * into the next boot after Activate. */
+    if (boot_selection_take_stay_request()) {
+        force_update = true;
+    }
     force_update = force_update || boot_button_held();
 
     boot_proto_init(&boot_selection, &boot_update);
