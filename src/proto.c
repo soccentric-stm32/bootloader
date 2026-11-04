@@ -170,10 +170,10 @@ static bool send_hello_reply(uint16_t seq)
                    (uint64_t)HAL_GetUIDw1();
 
     hwlink_HelloReply_ref_t reply = hwlink_HelloReply_create(
-        &builder, hwlink_Role_BOOTLOADER, name, version, commit, build,
-        text, uid, HAL_GetDEVID(), HAL_GetREVID(), flash_mode(),
+        &builder, hwlink_Role_BOOTLOADER, name, version, commit, build, uid,
+        HAL_GetDEVID(), HAL_GetREVID(), flash_mode(),
         (uint16_t)HWLINK_PROTOCOL_MAJOR, (uint16_t)HWLINK_PROTOCOL_MINOR,
-        (uint16_t)HWLINK_MAX_FRAME);
+        (uint16_t)HWLINK_MAX_FRAME, text);
 
     return reply != 0 &&
            send_body(hwlink_Body_as_HelloReply(reply), seq,
