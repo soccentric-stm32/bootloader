@@ -23,6 +23,9 @@
 #   make lint-strict    clang-tidy, failing on any finding
 #   make probe          detect the ST-LINK and the target chip
 #   make size           show the firmware size
+#   make gui            launch the PySide6 flash GUI (tools/flash_gui.py)
+#   make gui-deps       install the GUI dependencies (PySide6)
+#   make gui-check      byte-compile the GUI app (runs as part of build)
 #   make image          build the stm32-dev Docker image
 #   make help           show this help
 #
@@ -33,16 +36,18 @@
 
 BUILD_TYPE ?= Release
 NATIVE     ?= 0
+PYTHON     ?= python3
 
 BUILD_DIR  := build
 ELF        := $(BUILD_DIR)/boot.elf
 DEV        := scripts/docker-dev.sh
 OPENOCD    := openocd -f board/st_nucleo_f7.cfg
+GUI        := tools/flash_gui.py
 
 .DEFAULT_GOAL := build
 
 .PHONY: all build configure clean rebuild lint lint-strict flash erase reset \
-        debug gdbserver serial probe size image help
+        debug gdbserver serial probe size image gui gui-deps gui-check help
 
 all: build
 
@@ -54,7 +59,7 @@ configure:
 		$(DEV) run cmake -S /work -B /work/$(BUILD_DIR) -G Ninja -DCMAKE_BUILD_TYPE=$(BUILD_TYPE); \
 	fi
 
-build: configure
+build: configure gui-check
 	$(DEV) run cmake --build /work/$(BUILD_DIR)
 
 clean:
@@ -74,6 +79,18 @@ lint-strict:
 size:
 	@test -f $(ELF) || { echo "error: $(ELF) not found, run make build"; exit 1; }
 	$(DEV) run arm-none-eabi-size /work/$(ELF)
+
+# The GUI is a host-side PySide6 app; it drives scripts/docker-dev.sh, so it
+# never needs the container's toolchain.  gui-check keeps it compiling as
+# part of every build without requiring PySide6 to be installed.
+gui-check:
+	$(PYTHON) -m py_compile $(GUI)
+
+gui: gui-check
+	$(PYTHON) $(GUI)
+
+gui-deps:
+	$(PYTHON) -m pip install -r tools/requirements-gui.txt
 
 image:
 	$(DEV) build

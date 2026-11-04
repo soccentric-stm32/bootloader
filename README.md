@@ -68,6 +68,7 @@ Everything runs in the `stm32-dev` container through `scripts/docker-dev.sh`:
 scripts/build.sh            # cmake configure + ninja build (in the container)
 scripts/build.sh clean      # from scratch
 make flash                  # flash build/boot.elf over SWD, verify, reset
+make gui                    # PySide6 flash GUI (make gui-deps once)
 make help                   # all targets (lint, debug, serial, ...)
 ```
 

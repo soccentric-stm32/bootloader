@@ -1,0 +1,3 @@
+# GUI dependencies for tools/flash_gui.py (host only, not baked into the
+# stm32-dev container).
+PySide6>=6.5
