@@ -225,24 +225,29 @@ class Link:
               f"{done}/{total} ({percent:.0f}%)", flush=True)
 
     def request(self, payload: bytes, timeout: float | None = None,
-                seq: int | None = None) -> bytes:
+                seq: int | None = None, retries: int = 1) -> bytes:
         if timeout is None:
             timeout = self.timeout
         if seq is None:
             seq = self._next_seq()
-        deadline = time.monotonic() + timeout
-        self._send(payload, seq)
-        while time.monotonic() < deadline:
-            frame = self._read_frame(deadline)
-            if frame is None:
+        # Resend the same sequence number on timeout: BOOT replays the
+        # cached reply instead of running the request twice (BNFR-003).
+        for attempt in range(retries + 1):
+            deadline = time.monotonic() + timeout
+            self._send(payload, seq)
+            while time.monotonic() < deadline:
+                frame = self._read_frame(deadline)
+                if frame is None:
+                    break
+                flags, frame_seq, response = frame
+                if flags & HWLINK_FLAG_EVENT:
+                    self._handle_event(response)
+                    continue
+                if not (flags & HWLINK_FLAG_RESPONSE) or frame_seq != seq:
+                    continue
+                return response
+            if attempt == retries:
                 break
-            flags, frame_seq, response = frame
-            if flags & HWLINK_FLAG_EVENT:
-                self._handle_event(response)
-                continue
-            if not (flags & HWLINK_FLAG_RESPONSE) or frame_seq != seq:
-                continue
-            return response
         raise LinkError(f"timeout waiting for reply to sequence {seq}")
 
     def hello(self) -> HelloReply:

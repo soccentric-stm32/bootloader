@@ -101,8 +101,10 @@ boot_error_t boot_update_begin(boot_update_t *update,
         return BOOT_ERR_MALFORMED;
     }
     if (update->active) {
-        detail_set(detail, detail_cap, "update already in progress");
-        return BOOT_ERR_BAD_STATE;
+        /* BNFR-003: a lost link must not wedge the update path.  Restart
+         * the session; this call re-erases the metadata sector, and the
+         * slot sectors are erased lazily on the first write. */
+        boot_update_reset(update);
     }
 
     boot_error_t error = BOOT_ERR_NONE;
