@@ -81,10 +81,12 @@ pipeline {
 
         stage('Python tests') {
             steps {
+                // Ubuntu 24.04 blocks pip in the system Python (PEP 668), so
+                // the host tools get a throw-away virtual environment.
                 sh '''
-                    python3 -m pip install --quiet -r tools/requirements.txt
-                    python3 -m pip install --quiet pytest
-                    make test-python
+                    python3 -m venv .venv
+                    .venv/bin/python -m pip install --quiet -r tools/requirements.txt pytest
+                    PATH="${PWD}/.venv/bin:${PATH}" make test-python
                 '''
             }
         }

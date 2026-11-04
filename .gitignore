@@ -138,3 +138,6 @@ reports/
 
 # Host unit-test binary
 tests/host/host_tests
+
+# --- Jenkins Python tests virtualenv ---
+.venv/
