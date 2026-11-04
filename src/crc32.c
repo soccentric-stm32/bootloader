@@ -41,14 +41,14 @@ uint32_t boot_crc32(const void *data, size_t len)
 
     __HAL_RCC_CRC_CLK_ENABLE();
 
-    /* Reset the unit, then set the init value and the reflection mode that
-     * is equivalent to the reflected zlib algorithm. */
-    CRC->CR = CRC_CR_RESET;
+    /* Program INIT and the reflection mode first, then reset: RESET loads
+     * DR from the *current* INIT value.  (It only worked before because
+     * INIT was already 0xFFFFFFFF.) */
+    CRC->INIT = 0xFFFFFFFFUL;
+    CRC->CR   = CRC_CR_REV_IN_0 | CRC_CR_REV_OUT | CRC_CR_RESET;
     while ((CRC->CR & CRC_CR_RESET) != 0U) {
         /* reset is self-clearing */
     }
-    CRC->INIT = 0xFFFFFFFFUL;
-    CRC->CR   = CRC_CR_REV_IN_0 | CRC_CR_REV_OUT;
 
     size_t words = len / 4U;
     for (size_t i = 0U; i < words; i++) {
