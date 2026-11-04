@@ -1,6 +1,7 @@
 // Jenkinsfile - multi-stage CI for the STM32 A/B bootloader.
 //
-//   Checkout -> Toolchain -> Build -> Static analysis -> Layout contract -> Image tool -> Publish
+//   Checkout -> Toolchain -> Build -> Host tests -> Python tests -> Static
+//   analysis -> Layout contract -> Image tool -> HIL (optional) -> Publish
 //
 // Builds run through scripts/docker-dev.sh (BCON-001); the stm32-dev image is
 // built from docker/Dockerfile on first use. The layout stage keeps the
@@ -22,6 +23,10 @@ pipeline {
         choice(name: 'BUILD_TYPE', choices: ['Release', 'Debug'], description: 'CMake build type')
         booleanParam(name: 'RUN_LINT', defaultValue: true, description: 'Run clang-tidy')
         booleanParam(name: 'STRICT_LINT', defaultValue: false, description: 'Fail on any clang-tidy finding')
+        booleanParam(name: 'RUN_HIL', defaultValue: false, description: 'Run the bench NUCLEO hardware-in-the-loop job')
+        string(name: 'HIL_PORT', defaultValue: '/dev/ttyACM0', description: 'ST-LINK VCP for the HIL job')
+        string(name: 'HIL_IMAGE_A', defaultValue: 'build/app_a.img', description: 'Confirmed application image for slot A')
+        string(name: 'HIL_IMAGE_B', defaultValue: 'build/app_b.img', description: 'Confirmed application image for slot B')
     }
 
     environment {
@@ -61,6 +66,22 @@ pipeline {
             }
         }
 
+        stage('Host tests') {
+            steps {
+                sh 'make test-host'
+            }
+        }
+
+        stage('Python tests') {
+            steps {
+                sh '''
+                    python3 -m pip install --quiet -r tools/requirements.txt
+                    python3 -m pip install --quiet pytest
+                    make test-python
+                '''
+            }
+        }
+
         stage('Static analysis') {
             when { expression { return params.RUN_LINT } }
             steps {
@@ -77,6 +98,7 @@ pipeline {
         stage('Layout contract') {
             steps {
                 sh '''
+                    make test-contract
                     python3 - <<'PY'
 from pathlib import Path
 
@@ -110,6 +132,24 @@ for name, want in expected.items():
         raise SystemExit(f"layout: {name} is 0x{got:08X}, expected 0x{want:08X}")
 
 print("layout: bank, slot and metadata constants match the published contract")
+PY
+                    python3 - <<'PY'
+# P1-4: factory metadata must follow Appendix B exactly.
+import zlib
+import sys
+sys.path.insert(0, "tools")
+import mkimage
+
+header = bytes(256)
+sector = mkimage.build_metadata(header, 0x11223344, 1)
+assert len(sector) == 0x4000, "metadata sector size"
+for offset, magic in ((0x100, 0x56455249), (0x120, 0x41435456),
+                      (0x140, 0x434F4E46)):
+    record = sector[offset:offset + 32]
+    assert int.from_bytes(record[:4], "little") == magic
+    assert zlib.crc32(record[:28]) & 0xFFFFFFFF == \
+        int.from_bytes(record[28:32], "little")
+print("factory metadata: header, VERIFIED, ACTIVATED and CONFIRMED OK")
 PY
                 '''
             }
@@ -165,14 +205,62 @@ PY
             }
         }
 
+        stage('Hardware-in-the-loop') {
+            when { expression { return params.RUN_HIL } }
+            steps {
+                sh '''
+                    test -f "${HIL_IMAGE_A}" || { echo "HIL_IMAGE_A not found: ${HIL_IMAGE_A}"; exit 1; }
+                    test -f "${HIL_IMAGE_B}" || { echo "HIL_IMAGE_B not found: ${HIL_IMAGE_B}"; exit 1; }
+                    tools/provision.sh build/boot.elf
+                    tools/bootctl.py --port "$HIL_PORT" update --both \
+                        --a "$HIL_IMAGE_A" --b "$HIL_IMAGE_B" --json
+                    tools/bootctl.py --port "$HIL_PORT" info --json
+
+                    # Rollback: a vector-table-only image passes the header,
+                    # vector and CRC checks but faults as soon as BOOT jumps
+                    # to it, so the trial limit must reject it and boot the
+                    # confirmed slot again.
+                    python3 - <<'PY'
+import struct, subprocess, sys
+from pathlib import Path
+work = Path("build")
+binary = work / "hil_bad.bin"
+binary.write_bytes(struct.pack("<II", 0x20020000, 0x0800C001))
+subprocess.run([sys.executable, "tools/mkimage.py", "--input", str(binary),
+                "--output", str(work / "hil_bad.img"), "--version", "0.0.1",
+                "--name", "hil-bad"], check=True)
+PY
+                    set +e
+                    tools/bootctl.py --port "$HIL_PORT" update \
+                        build/hil_bad.img --activate --wait --json
+                    bad_status=$?
+                    set -e
+                    if [ "$bad_status" -eq 0 ]; then
+                        echo "rollback test unexpectedly confirmed a bad image"
+                        exit 1
+                    fi
+                    tools/bootctl.py --port "$HIL_PORT" info --json \
+                        | tee build/hil_info.json
+                    python3 - <<'PY'
+import json
+data = json.load(open("build/hil_info.json"))
+assert data["last_outcome"] == "ROLLED_BACK", data["last_outcome"]
+assert data["active_valid"] is True, data
+print("HIL: both slots confirmed and bad-image rollback verified")
+PY
+                '''
+            }
+        }
+
         stage('Publish') {
             steps {
                 sh '''
+                    make package-hwlink
                     sha256sum build/boot.elf build/boot.bin build/boot.hex > build/SHA256SUMS
                     sha256sum build/boot.map >> build/SHA256SUMS
                     cat build/SHA256SUMS
                 '''
-                archiveArtifacts artifacts: 'build/boot.elf,build/boot.bin,build/boot.hex,build/boot.map,build/SHA256SUMS',
+                archiveArtifacts artifacts: 'build/boot.elf,build/boot.bin,build/boot.hex,build/boot.map,build/SHA256SUMS,build/soccentric-hwlink/**',
                                  fingerprint: true
             }
         }

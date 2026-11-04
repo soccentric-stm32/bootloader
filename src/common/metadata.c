@@ -82,3 +82,34 @@ bool boot_meta_write_record(boot_slot_t slot, uint32_t offset,
     return boot_flash_program_meta(slot, offset, record,
                                    BOOT_META_RECORD_SIZE);
 }
+
+uint32_t boot_meta_trial_count(boot_slot_t slot)
+{
+    uint32_t count = 0U;
+
+    for (uint32_t i = 0U; i < BOOT_META_TRIAL_RECORDS; i++) {
+        uint32_t value = 0U;
+        bool present = false;
+        (void)boot_meta_read_record(slot,
+                                    BOOT_META_TRIAL_OFFSET +
+                                        (i * BOOT_META_RECORD_SIZE),
+                                    BOOT_META_TRIAL_MAGIC, &value,
+                                    &present);
+        /* A torn or out-of-order record ends the contiguous run. */
+        if (!present || value != i + 1U) {
+            break;
+        }
+        count = value;
+    }
+    return count;
+}
+
+bool boot_meta_write_trial(boot_slot_t slot, uint32_t attempt)
+{
+    if (attempt == 0U || attempt > BOOT_META_TRIAL_RECORDS) {
+        return false;
+    }
+    return boot_meta_write_record(
+        slot, BOOT_META_TRIAL_OFFSET + ((attempt - 1U) * BOOT_META_RECORD_SIZE),
+        BOOT_META_TRIAL_MAGIC, attempt);
+}

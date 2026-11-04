@@ -9,7 +9,7 @@ rollback.
 |---|---|
 | Requirements | [SRS.md](SRS.md) — SRS-BOOT-F767 (v0.1) |
 | Board | NUCLEO-F767ZI — see [Hardware.md](https://github.com/soccentric-stm32/soccentric-stm32-validation-firmware/blob/HEAD/Hardware.md) |
-| Status | Feature complete for v0.1: clock tree, USART3 + HWLINK server, image/header CRC32, metadata and A/B selection, bank swap, trial boot + IWDG + rollback, `BootInfo` and the host tools |
+| Status | Feature complete for v0.1: clock tree, USART3 + HWLINK server, image/header CRC32, metadata and A/B selection, bank swap, trial boot + IWDG + rollback, persistent trial records, `BootInfo` (protocol minor 2) and the host tools |
 | Build environment | [docker/README.md](docker/README.md): same `stm32-dev` image as the validation firmware (STM32CubeF7 v1.17.4, arm-none-eabi-gcc 13.2) |
 
 ## Flash layout (dual bank, `nDBANK = 0`)
@@ -28,9 +28,10 @@ itself executes from.
 
 The metadata sector is append-only.  Each record is 32 bytes: magic, one
 value word, zeros and a CRC32 of the first 28 bytes.  The header (256 bytes)
-is followed by `VERIFIED`, `ACTIVATED`, `CONFIRMED` and `REJECTED` records;
-see SRS Appendix B.  A torn or erased record fails its CRC and is treated as
-absent.
+is followed by `VERIFIED`, `ACTIVATED`, `CONFIRMED`, `REJECTED` and up to
+eight `TRIAL` records; see SRS Appendix B.  The trial records make the trial
+counter survive a power loss.  A torn or erased record fails its CRC and is
+treated as absent.
 
 BOOT itself uses 60 KB of DTCM (code, stack, message buffers, flatcc arena)
 and a 4 KB USART3 receive ring in SRAM1.  The ring must not be in DTCM: DMA
@@ -52,7 +53,9 @@ src/protocol/   HWLINK codec/server, flatcc port, generated FlatBuffers headers
 board/          HAL configuration and board pin map
 ld/             Linker script (bank 1 sectors 0-1, 32 KB)
 protocol/       HWLINK FlatBuffers schema (hwlink.fbs)
-tools/          Host tools: bootctl.py, mkimage.py, provisioning
+tools/          Host tools: bootctl.py, mkimage.py, provisioning, GUI
+  gui/          GUI device model and sequential process runner
+tests/          Host C tests and Python protocol tests
 scripts/        Build, Docker and serial helpers
 third_party/    Vendored flatcc runtime
 docker/         stm32-dev build environment
@@ -109,14 +112,51 @@ rerun with `--no-options`.
    ```bash
    pip install pyserial        # only host dependency; flatbuffers is vendored
    tools/bootctl.py info
-   tools/bootctl.py update build/app.img --activate
+   tools/bootctl.py update build/app.img --activate --wait
+   tools/bootctl.py update build/app.img --both --json
    tools/bootctl.py enter          # running application -> BOOT
    tools/bootctl.py reset
    ```
 
-   `bootctl.py` implements `info`, `update`, `activate`, `enter`, `reset`
-   and `set-baud` over HWLINK.  Add `--fast` to `update` to switch to
-   921600 inside the same session (BOOT always starts at 115200).
+   `bootctl.py` implements `info`, `update`, `activate`, `enter`, `wait`,
+   `reset` and `set-baud` over HWLINK.  If the application is running, the
+   tool sends `EnterBootloader` and reopens the port automatically
+   (`--no-enter` disables this).  `update --both` updates and activates the
+   slot BOOT reports as the target, waits for the application to confirm the
+   trial, enters BOOT again and repeats for the other slot; `--a IMG --b IMG`
+   supplies different images.  Every command accepts `--json` for one JSON
+   object per line.  Add `--fast` to switch to 921600 inside the same session
+   (BOOT always starts at 115200).
+
+3. Factory provisioning can pre-build both metadata sectors and one combined
+   Intel HEX file:
+
+   ```bash
+   tools/mkimage.py --image build/app.img --metadata A \
+       --output build/meta_a.bin
+   tools/mkimage.py --factory-hex build/factory.hex --boot build/boot.hex \
+       --slot-a build/app_a.img --slot-b build/app_b.img
+   openocd -f board/st_nucleo_f7.cfg -c "program build/factory.hex verify reset exit"
+   # or, in one provisioning pass (option bytes + mass erase + factory HEX):
+   tools/provision.sh build/factory.hex
+   ```
+
+## Tests
+
+```bash
+make test-host       # C tests with a fake 2 MB flash and backup registers
+make test-python     # bootctl/mkimage tests, including a simulated BOOT on a pty
+make test-contract   # layout/schema/protocol-minor consistency
+make test            # all of the above
+```
+
+Jenkins also has an optional `RUN_HIL` stage.  It provisions a bench
+NUCLEO, flashes BOOT, runs `bootctl update --both --a A --b B`, then loads
+a vector-table-only bad image and verifies that the trial limit rolls back
+to the confirmed slot.  Supply `HIL_IMAGE_A`/`HIL_IMAGE_B` from the real
+application build.  A true supply power-cycle during an update remains a
+manual bench step; a reset during an update exercises the same flash
+metadata path and can be done with `scripts/docker-dev.sh reset`.
 
 3. On reset BOOT listens for 500 ms for a HWLINK `Hello` ([ENT-001]), then
    boots the valid slot with the highest activation sequence number.  B1

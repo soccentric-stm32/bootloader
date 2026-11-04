@@ -166,12 +166,12 @@ __flatbuffers_build_table(flatbuffers_, hwlink_BootSlotInfo, 14)
 static const flatbuffers_voffset_t __hwlink_BootInfo_required[] = { 0 };
 typedef flatbuffers_ref_t hwlink_BootInfo_ref_t;
 static hwlink_BootInfo_ref_t hwlink_BootInfo_clone(flatbuffers_builder_t *B, hwlink_BootInfo_table_t t);
-__flatbuffers_build_table(flatbuffers_, hwlink_BootInfo, 5)
+__flatbuffers_build_table(flatbuffers_, hwlink_BootInfo, 9)
 
 static const flatbuffers_voffset_t __hwlink_UpdateBegin_required[] = { 0 };
 typedef flatbuffers_ref_t hwlink_UpdateBegin_ref_t;
 static hwlink_UpdateBegin_ref_t hwlink_UpdateBegin_clone(flatbuffers_builder_t *B, hwlink_UpdateBegin_table_t t);
-__flatbuffers_build_table(flatbuffers_, hwlink_UpdateBegin, 1)
+__flatbuffers_build_table(flatbuffers_, hwlink_UpdateBegin, 2)
 
 static const flatbuffers_voffset_t __hwlink_UpdateData_required[] = { 0 };
 typedef flatbuffers_ref_t hwlink_UpdateData_ref_t;
@@ -353,14 +353,16 @@ static inline hwlink_BootSlotInfo_ref_t hwlink_BootSlotInfo_create(flatbuffers_b
 __flatbuffers_build_table_prolog(flatbuffers_, hwlink_BootSlotInfo, hwlink_BootSlotInfo_file_identifier, hwlink_BootSlotInfo_type_identifier)
 
 #define __hwlink_BootInfo_formal_args ,\
-  hwlink_Slot_enum_t v0, hwlink_BootOutcome_enum_t v1, hwlink_Slot_enum_t v2, hwlink_FlashMode_enum_t v3, hwlink_BootSlotInfo_vec_ref_t v4
+  hwlink_Slot_enum_t v0, hwlink_BootOutcome_enum_t v1, hwlink_Slot_enum_t v2, hwlink_FlashMode_enum_t v3,\
+  hwlink_BootSlotInfo_vec_ref_t v4, flatbuffers_bool_t v5, hwlink_Slot_enum_t v6, flatbuffers_string_ref_t v7, flatbuffers_string_ref_t v8
 #define __hwlink_BootInfo_call_args ,\
-  v0, v1, v2, v3, v4
+  v0, v1, v2, v3,\
+  v4, v5, v6, v7, v8
 static inline hwlink_BootInfo_ref_t hwlink_BootInfo_create(flatbuffers_builder_t *B __hwlink_BootInfo_formal_args);
 __flatbuffers_build_table_prolog(flatbuffers_, hwlink_BootInfo, hwlink_BootInfo_file_identifier, hwlink_BootInfo_type_identifier)
 
-#define __hwlink_UpdateBegin_formal_args , hwlink_ImageHeader_ref_t v0
-#define __hwlink_UpdateBegin_call_args , v0
+#define __hwlink_UpdateBegin_formal_args , hwlink_ImageHeader_ref_t v0, flatbuffers_bool_t v1
+#define __hwlink_UpdateBegin_call_args , v0, v1
 static inline hwlink_UpdateBegin_ref_t hwlink_UpdateBegin_create(flatbuffers_builder_t *B __hwlink_UpdateBegin_formal_args);
 __flatbuffers_build_table_prolog(flatbuffers_, hwlink_UpdateBegin, hwlink_UpdateBegin_file_identifier, hwlink_UpdateBegin_type_identifier)
 
@@ -1195,15 +1197,23 @@ __flatbuffers_build_scalar_field(1, flatbuffers_, hwlink_BootInfo_last_outcome, 
 __flatbuffers_build_scalar_field(2, flatbuffers_, hwlink_BootInfo_rejected_slot, hwlink_Slot, hwlink_Slot_enum_t, 1, 1, UINT8_C(0), hwlink_BootInfo)
 __flatbuffers_build_scalar_field(3, flatbuffers_, hwlink_BootInfo_flash_mode, hwlink_FlashMode, hwlink_FlashMode_enum_t, 1, 1, UINT8_C(0), hwlink_BootInfo)
 __flatbuffers_build_table_vector_field(4, flatbuffers_, hwlink_BootInfo_slots, hwlink_BootSlotInfo, hwlink_BootInfo)
+__flatbuffers_build_scalar_field(5, flatbuffers_, hwlink_BootInfo_active_valid, flatbuffers_bool, flatbuffers_bool_t, 1, 1, UINT8_C(0), hwlink_BootInfo)
+__flatbuffers_build_scalar_field(6, flatbuffers_, hwlink_BootInfo_target_slot, hwlink_Slot, hwlink_Slot_enum_t, 1, 1, UINT8_C(0), hwlink_BootInfo)
+__flatbuffers_build_string_field(7, flatbuffers_, hwlink_BootInfo_boot_version, hwlink_BootInfo)
+__flatbuffers_build_string_field(8, flatbuffers_, hwlink_BootInfo_boot_build, hwlink_BootInfo)
 
 static inline hwlink_BootInfo_ref_t hwlink_BootInfo_create(flatbuffers_builder_t *B __hwlink_BootInfo_formal_args)
 {
     if (hwlink_BootInfo_start(B)
         || hwlink_BootInfo_slots_add(B, v4)
+        || hwlink_BootInfo_boot_version_add(B, v7)
+        || hwlink_BootInfo_boot_build_add(B, v8)
         || hwlink_BootInfo_active_slot_add(B, v0)
         || hwlink_BootInfo_last_outcome_add(B, v1)
         || hwlink_BootInfo_rejected_slot_add(B, v2)
-        || hwlink_BootInfo_flash_mode_add(B, v3)) {
+        || hwlink_BootInfo_flash_mode_add(B, v3)
+        || hwlink_BootInfo_active_valid_add(B, v5)
+        || hwlink_BootInfo_target_slot_add(B, v6)) {
         return 0;
     }
     return hwlink_BootInfo_end(B);
@@ -1214,21 +1224,27 @@ static hwlink_BootInfo_ref_t hwlink_BootInfo_clone(flatbuffers_builder_t *B, hwl
     __flatbuffers_memoize_begin(B, t);
     if (hwlink_BootInfo_start(B)
         || hwlink_BootInfo_slots_pick(B, t)
+        || hwlink_BootInfo_boot_version_pick(B, t)
+        || hwlink_BootInfo_boot_build_pick(B, t)
         || hwlink_BootInfo_active_slot_pick(B, t)
         || hwlink_BootInfo_last_outcome_pick(B, t)
         || hwlink_BootInfo_rejected_slot_pick(B, t)
-        || hwlink_BootInfo_flash_mode_pick(B, t)) {
+        || hwlink_BootInfo_flash_mode_pick(B, t)
+        || hwlink_BootInfo_active_valid_pick(B, t)
+        || hwlink_BootInfo_target_slot_pick(B, t)) {
         return 0;
     }
     __flatbuffers_memoize_end(B, t, hwlink_BootInfo_end(B));
 }
 
 __flatbuffers_build_table_field(0, flatbuffers_, hwlink_UpdateBegin_header, hwlink_ImageHeader, hwlink_UpdateBegin)
+__flatbuffers_build_scalar_field(1, flatbuffers_, hwlink_UpdateBegin_force, flatbuffers_bool, flatbuffers_bool_t, 1, 1, UINT8_C(0), hwlink_UpdateBegin)
 
 static inline hwlink_UpdateBegin_ref_t hwlink_UpdateBegin_create(flatbuffers_builder_t *B __hwlink_UpdateBegin_formal_args)
 {
     if (hwlink_UpdateBegin_start(B)
-        || hwlink_UpdateBegin_header_add(B, v0)) {
+        || hwlink_UpdateBegin_header_add(B, v0)
+        || hwlink_UpdateBegin_force_add(B, v1)) {
         return 0;
     }
     return hwlink_UpdateBegin_end(B);
@@ -1238,7 +1254,8 @@ static hwlink_UpdateBegin_ref_t hwlink_UpdateBegin_clone(flatbuffers_builder_t *
 {
     __flatbuffers_memoize_begin(B, t);
     if (hwlink_UpdateBegin_start(B)
-        || hwlink_UpdateBegin_header_pick(B, t)) {
+        || hwlink_UpdateBegin_header_pick(B, t)
+        || hwlink_UpdateBegin_force_pick(B, t)) {
         return 0;
     }
     __flatbuffers_memoize_end(B, t, hwlink_UpdateBegin_end(B));

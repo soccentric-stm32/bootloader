@@ -26,6 +26,8 @@
 #   make gui            launch the PySide6 flash GUI (tools/flash_gui.py)
 #   make gui-deps       install the GUI dependencies (PySide6)
 #   make gui-check      byte-compile the GUI app (runs as part of build)
+#   make test           host C tests, Python tests and contract check
+#   make package-hwlink publish the canonical HWLINK contract bundle
 #   make image          build the stm32-dev Docker image
 #   make help           show this help
 #
@@ -43,11 +45,13 @@ ELF        := $(BUILD_DIR)/boot.elf
 DEV        := scripts/docker-dev.sh
 OPENOCD    := openocd -f board/st_nucleo_f7.cfg
 GUI        := tools/flash_gui.py
+GUI_MODULES := tools/gui/device.py tools/gui/runner.py
 
 .DEFAULT_GOAL := build
 
 .PHONY: all build configure clean rebuild lint lint-strict flash erase reset \
-        debug gdbserver serial probe size image gui gui-deps gui-check help
+        debug gdbserver serial probe size image gui gui-deps gui-check \
+        test test-host test-python test-contract package-hwlink help
 
 all: build
 
@@ -84,13 +88,28 @@ size:
 # never needs the container's toolchain.  gui-check keeps it compiling as
 # part of every build without requiring PySide6 to be installed.
 gui-check:
-	$(PYTHON) -m py_compile $(GUI)
+	$(PYTHON) -m py_compile $(GUI) $(GUI_MODULES) tools/bootctl.py \
+		tools/mkimage.py tools/check_contracts.py tools/package_hwlink.py
 
 gui: gui-check
 	$(PYTHON) $(GUI)
 
 gui-deps:
 	$(PYTHON) -m pip install -r tools/requirements-gui.txt
+
+test: test-host test-python test-contract
+
+test-host:
+	tests/run_host_tests.sh
+
+test-python:
+	$(PYTHON) -m pytest -q tests/python
+
+test-contract:
+	$(PYTHON) tools/check_contracts.py
+
+package-hwlink:
+	$(PYTHON) tools/package_hwlink.py
 
 image:
 	$(DEV) build
@@ -101,7 +120,7 @@ flash: build
 	$(OPENOCD) -c "program $(ELF) verify reset exit"
 
 erase:
-	$(OPENOCD) -c "init; reset halt; flash erase_sector 0 0 last; exit"
+	$(OPENOCD) -c "init; reset halt; stm32f2x mass_erase 0; exit"
 
 reset:
 	$(OPENOCD) -c "init; reset run; exit"

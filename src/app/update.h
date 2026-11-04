@@ -70,15 +70,18 @@ typedef struct {
     uint32_t word_stage_offset;
 } boot_update_t;
 
-typedef void (*boot_progress_fn)(uint32_t done, uint32_t total);
+typedef void (*boot_progress_fn)(const char *operation, uint32_t done,
+                                 uint32_t total);
 
 void boot_update_reset(boot_update_t *update);
 void boot_update_set_progress_cb(boot_progress_fn callback);
 
 /* UPD-002: validate the header, erase the inactive metadata sector, write
- * the header record. */
+ * the header record.  P0-1: refuses to touch the rollback slot while the
+ * active slot is still on trial; force is the bench-only override. */
 boot_error_t boot_update_begin(boot_update_t *update,
-                               const boot_image_desc_t *desc,
+                               const boot_selection_t *selection,
+                               const boot_image_desc_t *desc, bool force,
                                char *detail, size_t detail_cap);
 
 /* UPD-003/004/005: program one chunk and return the next expected offset. */

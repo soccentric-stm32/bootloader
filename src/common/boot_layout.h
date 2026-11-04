@@ -71,6 +71,11 @@
 #define BOOT_META_ACTIVATED_OFFSET 0x120UL
 #define BOOT_META_CONFIRMED_OFFSET 0x140UL
 #define BOOT_META_REJECTED_OFFSET  0x160UL
+/* P2-6 / OPEN-B03: append-only trial attempts.  Eight 32-byte records
+ * follow REJECTED.  A pending boot appends one record; the number of
+ * programmed records is the trial counter that survives a power loss. */
+#define BOOT_META_TRIAL_OFFSET     0x180UL
+#define BOOT_META_TRIAL_RECORDS    8UL
 #define BOOT_META_RECORD_SIZE      32UL
 #define BOOT_META_HEADER_SIZE      256UL
 
@@ -78,6 +83,7 @@
 #define BOOT_META_ACTIVATED_MAGIC  0x41435456UL  /* "ACTV" */
 #define BOOT_META_CONFIRMED_MAGIC  0x434F4E46UL  /* "CONF" */
 #define BOOT_META_REJECTED_MAGIC   0x52454A45UL  /* "REJE" */
+#define BOOT_META_TRIAL_MAGIC      0x5452494CUL  /* "TRIL" */
 
 /* Rejection reasons (Appendix B, REJECTED record value). */
 #define BOOT_REJECT_TRIAL_LIMIT    0x00000001UL

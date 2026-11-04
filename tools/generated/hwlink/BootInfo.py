@@ -81,7 +81,35 @@ class BootInfo(object):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(12))
         return o == 0
 
-def BootInfoStart(builder): builder.StartObject(5)
+    # BootInfo
+    def ActiveValid(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(14))
+        if o != 0:
+            return bool(self._tab.Get(flatbuffers.number_types.BoolFlags, o + self._tab.Pos))
+        return False
+
+    # BootInfo
+    def TargetSlot(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(16))
+        if o != 0:
+            return self._tab.Get(flatbuffers.number_types.Uint8Flags, o + self._tab.Pos)
+        return 0
+
+    # BootInfo
+    def BootVersion(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(18))
+        if o != 0:
+            return self._tab.String(o + self._tab.Pos)
+        return None
+
+    # BootInfo
+    def BootBuild(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(20))
+        if o != 0:
+            return self._tab.String(o + self._tab.Pos)
+        return None
+
+def BootInfoStart(builder): builder.StartObject(9)
 def Start(builder):
     return BootInfoStart(builder)
 def BootInfoAddActiveSlot(builder, activeSlot): builder.PrependUint8Slot(0, activeSlot, 0)
@@ -102,6 +130,18 @@ def AddSlots(builder, slots):
 def BootInfoStartSlotsVector(builder, numElems): return builder.StartVector(4, numElems, 4)
 def StartSlotsVector(builder, numElems):
     return BootInfoStartSlotsVector(builder, numElems)
+def BootInfoAddActiveValid(builder, activeValid): builder.PrependBoolSlot(5, activeValid, 0)
+def AddActiveValid(builder, activeValid):
+    return BootInfoAddActiveValid(builder, activeValid)
+def BootInfoAddTargetSlot(builder, targetSlot): builder.PrependUint8Slot(6, targetSlot, 0)
+def AddTargetSlot(builder, targetSlot):
+    return BootInfoAddTargetSlot(builder, targetSlot)
+def BootInfoAddBootVersion(builder, bootVersion): builder.PrependUOffsetTRelativeSlot(7, flatbuffers.number_types.UOffsetTFlags.py_type(bootVersion), 0)
+def AddBootVersion(builder, bootVersion):
+    return BootInfoAddBootVersion(builder, bootVersion)
+def BootInfoAddBootBuild(builder, bootBuild): builder.PrependUOffsetTRelativeSlot(8, flatbuffers.number_types.UOffsetTFlags.py_type(bootBuild), 0)
+def AddBootBuild(builder, bootBuild):
+    return BootInfoAddBootBuild(builder, bootBuild)
 def BootInfoEnd(builder): return builder.EndObject()
 def End(builder):
     return BootInfoEnd(builder)

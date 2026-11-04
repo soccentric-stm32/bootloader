@@ -12,6 +12,7 @@
 #
 # Usage:
 #   tools/provision.sh [build/boot.elf]
+#   tools/provision.sh build/factory.hex   # BOOT + A/B + metadata in one pass
 #
 # Runs OpenOCD in the stm32-dev container through scripts/docker-dev.sh.
 # Changing nDBANK forces a mass erase, so do not run this on a board whose

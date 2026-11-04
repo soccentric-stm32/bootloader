@@ -1167,6 +1167,10 @@ __flatbuffers_define_scalar_field(1, hwlink_BootInfo, last_outcome, hwlink_BootO
 __flatbuffers_define_scalar_field(2, hwlink_BootInfo, rejected_slot, hwlink_Slot, hwlink_Slot_enum_t, UINT8_C(0))
 __flatbuffers_define_scalar_field(3, hwlink_BootInfo, flash_mode, hwlink_FlashMode, hwlink_FlashMode_enum_t, UINT8_C(0))
 __flatbuffers_define_vector_field(4, hwlink_BootInfo, slots, hwlink_BootSlotInfo_vec_t, 0)
+__flatbuffers_define_scalar_field(5, hwlink_BootInfo, active_valid, flatbuffers_bool, flatbuffers_bool_t, UINT8_C(0))
+__flatbuffers_define_scalar_field(6, hwlink_BootInfo, target_slot, hwlink_Slot, hwlink_Slot_enum_t, UINT8_C(0))
+__flatbuffers_define_string_field(7, hwlink_BootInfo, boot_version, 0)
+__flatbuffers_define_string_field(8, hwlink_BootInfo, boot_build, 0)
 
 struct hwlink_UpdateBegin_table { uint8_t unused__; };
 
@@ -1177,6 +1181,7 @@ __flatbuffers_offset_vec_at(hwlink_UpdateBegin_table_t, vec, i, 0)
 __flatbuffers_table_as_root(hwlink_UpdateBegin)
 
 __flatbuffers_define_table_field(0, hwlink_UpdateBegin, header, hwlink_ImageHeader_table_t, 0)
+__flatbuffers_define_scalar_field(1, hwlink_UpdateBegin, force, flatbuffers_bool, flatbuffers_bool_t, UINT8_C(0))
 
 struct hwlink_UpdateData_table { uint8_t unused__; };
 

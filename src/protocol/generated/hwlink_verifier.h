@@ -752,6 +752,10 @@ static int hwlink_BootInfo_verify_table(flatcc_table_verifier_descriptor_t *td)
     if ((ret = flatcc_verify_field(td, 2, 1, 1) /* rejected_slot */)) return ret;
     if ((ret = flatcc_verify_field(td, 3, 1, 1) /* flash_mode */)) return ret;
     if ((ret = flatcc_verify_table_vector_field(td, 4, 0, &hwlink_BootSlotInfo_verify_table) /* slots */)) return ret;
+    if ((ret = flatcc_verify_field(td, 5, 1, 1) /* active_valid */)) return ret;
+    if ((ret = flatcc_verify_field(td, 6, 1, 1) /* target_slot */)) return ret;
+    if ((ret = flatcc_verify_string_field(td, 7, 0) /* boot_version */)) return ret;
+    if ((ret = flatcc_verify_string_field(td, 8, 0) /* boot_build */)) return ret;
     return flatcc_verify_ok;
 }
 
@@ -779,6 +783,7 @@ static int hwlink_UpdateBegin_verify_table(flatcc_table_verifier_descriptor_t *t
 {
     int ret;
     if ((ret = flatcc_verify_table_field(td, 0, 0, &hwlink_ImageHeader_verify_table) /* header */)) return ret;
+    if ((ret = flatcc_verify_field(td, 1, 1, 1) /* force */)) return ret;
     return flatcc_verify_ok;
 }
 

@@ -85,7 +85,6 @@ static void boot_wrong_flash_mode(void)
     uint32_t last = HAL_GetTick();
     bool on = false;
     for (;;) {
-        boot_iwdg_kick();
         boot_proto_poll();
         uint32_t now = HAL_GetTick();
         if ((now - last) >= 250U) {
@@ -143,14 +142,11 @@ int main(void)
     } else if (trial_limit_pending) {
         /* The REJECTED record could not be programmed.  Never boot a slot
          * that has exhausted its trials: reject it in RAM for this boot and
-         * select the other slot, or stay in update mode if none is valid. */
-        boot_selection.slot[boot_selection.active].rejected = true;
-        boot_selection.slot[boot_selection.active].rejected_reason =
-            BOOT_REJECT_TRIAL_LIMIT;
-        boot_selection.slot[boot_selection.active].valid = false;
-        boot_selection_choose(&boot_selection);
-        boot_flash_set_active(boot_selection.active,
-                              boot_selection.active_valid);
+         * select the other slot, or stay in update mode if none is valid.
+         * The mask is re-applied on later scans (P0-2). */
+        boot_selection_mark_rejected(&boot_selection, boot_selection.active,
+                                     BOOT_REJECT_TRIAL_LIMIT);
+        boot_rescan_and_choose();
     }
 
     /* TRY-006: a confirmed slot clears the trial counter. */

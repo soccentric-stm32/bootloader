@@ -150,20 +150,31 @@ static bool meta_offset_allowed(boot_slot_t slot, uint32_t offset,
     }
 
     /* One complete 32-byte record at one of the Appendix B offsets. */
+    bool trial_offset = false;
+    if (offset >= BOOT_META_TRIAL_OFFSET) {
+        uint32_t index = (offset - BOOT_META_TRIAL_OFFSET) /
+                         BOOT_META_RECORD_SIZE;
+        trial_offset = index < BOOT_META_TRIAL_RECORDS &&
+                       ((offset - BOOT_META_TRIAL_OFFSET) %
+                        BOOT_META_RECORD_SIZE) == 0U;
+    }
     bool record_offset = offset == BOOT_META_VERIFIED_OFFSET ||
                          offset == BOOT_META_ACTIVATED_OFFSET ||
                          offset == BOOT_META_CONFIRMED_OFFSET ||
-                         offset == BOOT_META_REJECTED_OFFSET;
+                         offset == BOOT_META_REJECTED_OFFSET ||
+                         trial_offset;
     if (!record_offset || len > BOOT_META_RECORD_SIZE) {
         return false;
     }
     if (target) {
         return true;
     }
-    /* BSAFE-003 exception: CONFIRMED and REJECTED may be written into
-     * either metadata sector. */
+    /* BSAFE-003 exception: CONFIRMED, REJECTED and the P2-6 TRIAL records
+     * may be written into either metadata sector; the trial counter must
+     * be updated in the sector of the slot that is actually booting. */
     return offset == BOOT_META_CONFIRMED_OFFSET ||
-           offset == BOOT_META_REJECTED_OFFSET;
+           offset == BOOT_META_REJECTED_OFFSET ||
+           trial_offset;
 }
 
 bool boot_flash_program_meta(boot_slot_t slot, uint32_t offset,

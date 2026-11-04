@@ -281,10 +281,23 @@ table BootInfo {
     rejected_slot:Slot;
     flash_mode:FlashMode;
     slots:[BootSlotInfo];
+    // Protocol minor 2 (P0-3): BOOT reports whether it found a bootable
+    // slot and which slot it will write on the next update.  Hosts must
+    // use target_slot instead of guessing "the slot that is not active".
+    active_valid:bool;
+    target_slot:Slot;
+    // Protocol minor 2 (P3-9): BOOT's own build so hosts can detect an
+    // outdated bootloader.
+    boot_version:string;
+    boot_build:string;
 }
 
 table UpdateBegin {
     header:ImageHeader;
+    // Protocol minor 2 (P0-1): bench-only override that allows an update
+    // while the active slot is still on trial.  Production hosts must not
+    // set it: the other slot is the only rollback image.
+    force:bool;
 }
 
 table UpdateData {

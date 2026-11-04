@@ -62,6 +62,18 @@ static boot_update_t *g_update;
 static bool hello_seen;
 static uint32_t last_activity_ms;
 
+/* P2-7: a GetBootInfo scan is expensive (two 976 KB CRC runs).  Inside an
+ * update session the metadata only changes at UpdateBegin/UpdateEnd/
+ * UpdateAbort, so cache the scanned slot details and invalidate at those
+ * points. */
+static boot_selection_t boot_info_cache;
+static bool boot_info_cache_valid;
+
+static void boot_info_cache_invalidate(void)
+{
+    boot_info_cache_valid = false;
+}
+
 static uint32_t tx_timeout_ms(uint16_t len);
 
 static bool send_payload(const uint8_t *payload, size_t payload_len,
@@ -208,21 +220,25 @@ static bool send_update_result(uint16_t seq, bool success, uint32_t crc,
                      HWLINK_FLAG_RESPONSE, true);
 }
 
-static bool send_progress(uint32_t done, uint32_t total)
+static bool send_progress(const char *operation, uint32_t done,
+                          uint32_t total)
 {
     flatcc_builder_reset(&builder);
-    flatbuffers_string_ref_t operation =
-        flatbuffers_string_create_str(&builder, "update");
+    flatbuffers_string_ref_t op =
+        flatbuffers_string_create_str(&builder,
+                                      operation != NULL ? operation
+                                                        : "update");
     hwlink_Progress_ref_t progress =
-        hwlink_Progress_create(&builder, operation, done, total);
+        hwlink_Progress_create(&builder, op, done, total);
     return progress != 0 &&
            send_body(hwlink_Body_as_Progress(progress), 0U,
                      HWLINK_FLAG_EVENT, false);
 }
 
-static void proto_progress(uint32_t done, uint32_t total)
+static void proto_progress(const char *operation, uint32_t done,
+                           uint32_t total)
 {
-    (void)send_progress(done, total);
+    (void)send_progress(operation, done, total);
 }
 
 static void commit_to_hex(const uint8_t commit[20], char out[41])
@@ -257,6 +273,9 @@ static const char *slot_detail(const boot_slot_info_t *info)
     if (!info->vectors_ok) {
         return "bad stack pointer or reset vector";
     }
+    if (!info->crc_checked) {
+        return "image CRC not checked";
+    }
     if (!info->crc_ok) {
         return "image CRC32 mismatch";
     }
@@ -268,10 +287,24 @@ static const char *slot_detail(const boot_slot_info_t *info)
 
 static bool send_boot_info(uint16_t seq)
 {
-    /* Refresh the view so that headers written by UpdateBegin show up. */
-    boot_selection_scan(g_selection);
-    boot_selection_choose(g_selection);
-    boot_flash_set_active(g_selection->active, g_selection->active_valid);
+    /* P0-2/P2-7: refresh slot details without changing the active/target
+     * selection.  A REJECTED record that could only be applied in RAM is
+     * re-applied by the scan, so this request cannot undo a rollback while
+     * an update session is open.  During an update session, reuse the
+     * previous scan until the metadata changes. */
+    if (g_update != NULL && g_update->active && boot_info_cache_valid) {
+        for (uint32_t i = 0U; i < 2U; i++) {
+            g_selection->slot[i] = boot_info_cache.slot[i];
+        }
+    } else {
+        boot_selection_refresh_slots(g_selection);
+        if (g_update != NULL && g_update->active) {
+            for (uint32_t i = 0U; i < 2U; i++) {
+                boot_info_cache.slot[i] = g_selection->slot[i];
+            }
+            boot_info_cache_valid = true;
+        }
+    }
 
     flatcc_builder_reset(&builder);
 
@@ -294,12 +327,17 @@ static bool send_boot_info(uint16_t seq)
 
         uint8_t trial = 0U;
         if (pending) {
+            trial = info->trial_count;
             uint32_t raw = RTC->BKP0R;
             if ((raw & BOOT_TRIAL_MAGIC_MASK) == BOOT_TRIAL_MAGIC &&
                 ((raw >> BOOT_TRIAL_SLOT_SHIFT) & BOOT_TRIAL_SLOT_MASK) ==
                     i) {
-                trial = (uint8_t)((raw >> BOOT_TRIAL_COUNT_SHIFT) &
-                                  BOOT_TRIAL_COUNT_MASK);
+                uint8_t rtc_trial =
+                    (uint8_t)((raw >> BOOT_TRIAL_COUNT_SHIFT) &
+                              BOOT_TRIAL_COUNT_MASK);
+                if (rtc_trial > trial) {
+                    trial = rtc_trial;
+                }
             }
         }
 
@@ -355,6 +393,15 @@ static bool send_boot_info(uint16_t seq)
             ? (hwlink_Slot_enum_t)((uint32_t)rejected_slot + 1U)
             : hwlink_Slot_UNKNOWN;
 
+    /* P0-3: report the slot BOOT will actually write next instead of
+     * letting hosts guess "the slot that is not active". */
+    hwlink_Slot_enum_t target_slot =
+        (hwlink_Slot_enum_t)((uint32_t)boot_flash_target_slot() + 1U);
+    flatbuffers_string_ref_t boot_version =
+        flatbuffers_string_create_str(&builder, BOOT_VERSION_STR);
+    flatbuffers_string_ref_t boot_build =
+        flatbuffers_string_create_str(&builder, BOOT_BUILD_DATE);
+
     if (hwlink_BootInfo_start(&builder) != 0 ||
         hwlink_BootInfo_slots_start(&builder) != 0) {
         flatcc_builder_reset(&builder);
@@ -371,7 +418,12 @@ static bool send_boot_info(uint16_t seq)
         hwlink_BootInfo_last_outcome_add(
             &builder, (hwlink_BootOutcome_enum_t)outcome) != 0 ||
         hwlink_BootInfo_rejected_slot_add(&builder, rejected) != 0 ||
-        hwlink_BootInfo_flash_mode_add(&builder, flash_mode()) != 0) {
+        hwlink_BootInfo_flash_mode_add(&builder, flash_mode()) != 0 ||
+        hwlink_BootInfo_active_valid_add(
+            &builder, g_selection->active_valid ? 1U : 0U) != 0 ||
+        hwlink_BootInfo_target_slot_add(&builder, target_slot) != 0 ||
+        hwlink_BootInfo_boot_version_add(&builder, boot_version) != 0 ||
+        hwlink_BootInfo_boot_build_add(&builder, boot_build) != 0) {
         flatcc_builder_reset(&builder);
         return false;
     }
@@ -434,9 +486,11 @@ static void handle_update_begin(uint16_t seq,
     }
     desc.git_commit_len = (uint32_t)commit_len;
 
+    bool force = hwlink_UpdateBegin_force(begin) != 0;
     char detail[64];
-    boot_error_t error = boot_update_begin(g_update, &desc, detail,
-                                           sizeof(detail));
+    boot_info_cache_invalidate();
+    boot_error_t error = boot_update_begin(g_update, g_selection, &desc,
+                                           force, detail, sizeof(detail));
     if (error == BOOT_ERR_NONE) {
         (void)send_ack_offset(seq, 0U);
     } else {
@@ -474,6 +528,7 @@ static void handle_update_end(uint16_t seq)
 {
     char detail[64];
     uint32_t crc = 0U;
+    boot_info_cache_invalidate();
     boot_error_t error =
         boot_update_end(g_update, &crc, detail, sizeof(detail));
 
@@ -488,11 +543,17 @@ static void handle_update_end(uint16_t seq)
 static void handle_activate(uint16_t seq)
 {
     char detail[64];
+    boot_info_cache_invalidate();
     boot_error_t error =
         boot_update_activate(g_update, g_selection, detail, sizeof(detail));
     if (error == BOOT_ERR_NONE) {
-        (void)send_ack_offset(seq, 0U);
-        NVIC_SystemReset();
+        /* P2-5: give the Ack time to leave the UART before the reset.  If
+         * the host still loses the reply it treats the timeout as
+         * success-pending and confirms with GetBootInfo. */
+        if (send_ack_offset(seq, 0U)) {
+            HAL_Delay(20U);
+            NVIC_SystemReset();
+        }
     } else {
         (void)send_nak(seq, (hwlink_Error_enum_t)error, detail, 0U);
     }
@@ -565,6 +626,7 @@ static void handle_payload(uint16_t seq, const uint8_t *payload, size_t len)
         break;
 
     case hwlink_Body_UpdateAbort:
+        boot_info_cache_invalidate();
         boot_update_abort(g_update);
         (void)send_ack_offset(seq, 0U);
         break;
@@ -688,6 +750,7 @@ void boot_proto_init(boot_selection_t *selection, boot_update_t *update)
     g_selection = selection;
     g_update    = update;
     hello_seen  = false;
+    boot_info_cache_valid = false;
     last_activity_ms = HAL_GetTick();
 
     reset_parser();
@@ -723,8 +786,10 @@ void boot_proto_run(bool can_boot)
     bool led_on = true;
 
     for (;;) {
-        /* The IWDG cannot be stopped.  After a watchdog reset it is still
-         * running, so BOOT must reload it during a long update session. */
+        /* P3-9: the software watchdog is only started before the hand-over.
+         * BOOT may still be running after a reset with the IWDG active, so
+         * reloading it here is harmless; see boot_proto_run() for the long
+         * update session. */
         boot_iwdg_kick();
         boot_proto_poll();
 

@@ -30,6 +30,7 @@
 #   STM32_IMAGE    image name        (default: stm32-dev:latest)
 #   OPENOCD_CFG    OpenOCD config    (default: board/st_nucleo_f7.cfg)
 #   SERIAL_PORT    serial device     (default: first /dev/ttyACM*)
+#   WORKSPACE_DIR  sibling repos     (default: parent of the project)
 #
 
 set -euo pipefail
@@ -37,6 +38,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Resolve symlinks (pwd -P) so paths match realpath in container_path().
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+# P2-5: applications live in sibling repositories.  Mount the workspace
+# root at /workspace so a file built outside this repository can be flashed.
+WORKSPACE_DIR="${WORKSPACE_DIR:-$(cd "$PROJECT_DIR/.." && pwd -P)}"
 DOCKER_DIR="$PROJECT_DIR/docker"
 
 IMAGE="${STM32_IMAGE:-stm32-dev:latest}"
@@ -74,6 +78,7 @@ docker_args() {
         --network host
         --user "$(id -u):$(id -g)"
         --volume "$PROJECT_DIR:/work"
+        --volume "$WORKSPACE_DIR:/workspace"
         --workdir /work
         --volume /dev/bus/usb:/dev/bus/usb
         --device-cgroup-rule "c $USB_MAJOR:* rmw"
@@ -107,13 +112,15 @@ in_container() {
     docker run "${DOCKER_ARGS[@]}" "$IMAGE" "$@"
 }
 
-# Turn a host path into the matching path under /work in the container.
+# Turn a host path into the matching path under /work (project) or
+# /workspace (sibling application repositories).
 container_path() {
     local host_path
     host_path="$(realpath -m "$1")"
     case "$host_path" in
         "$PROJECT_DIR"/*) printf '/work/%s\n' "${host_path#"$PROJECT_DIR"/}" ;;
-        *) die "$1 is outside the project directory ($PROJECT_DIR) and is not visible in the container." ;;
+        "$WORKSPACE_DIR"/*) printf '/workspace/%s\n' "${host_path#"$WORKSPACE_DIR"/}" ;;
+        *) die "$1 is outside the workspace ($WORKSPACE_DIR) and is not visible in the container." ;;
     esac
 }
 
@@ -151,7 +158,9 @@ cmd_flash() {
 }
 
 cmd_erase() {
-    in_container openocd -f "$OPENOCD_CFG" -c "init; reset halt; flash erase_sector 0 0 last; exit"
+    # P2-4: mass erase covers both banks; flash erase_sector 0 0 last can
+    # stop at bank 1 depending on the OpenOCD stm32f2x bank mapping.
+    in_container openocd -f "$OPENOCD_CFG" -c "init; reset halt; stm32f2x mass_erase 0; exit"
 }
 
 cmd_reset() {

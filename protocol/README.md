@@ -4,14 +4,19 @@
 (SRS-GUI-F767 Appendix A).  It is the single source for the C headers in
 `../src/protocol/generated` and the Python package in `../tools/generated`.
 
-The copies in the other repositories are **not** identical yet.  The GUI
-adds the HWVAL tables and `OperatorPromptDone`; the validation firmware adds
-the HWVAL tables and `OperatorPromptDone`; the C, Rust and Zephyr
-applications omit `ImageHeader.header_crc32`.  The message set used by BOOT
-and the applications is wire-compatible (same union indices, same message
-layouts), and every component now reports protocol minor 1.  Merging the
-copies into one canonical schema is tracked as B-1 in the workspace
-`task.md`.
+Protocol minor 2 appends `BootInfo.active_valid`, `BootInfo.target_slot`,
+`BootInfo.boot_version`, `BootInfo.boot_build` and `UpdateBegin.force`.
+Hosts must use `target_slot` instead of guessing which slot BOOT will write,
+and `force` is a bench-only override for an update while the active slot is
+still on trial.  Older minors remain wire-compatible because all new fields
+are appended.
+
+The copies in the other repositories must follow the same append-only rule.
+`tools/check_contracts.py --app-repo <repo>` checks the layout constants,
+`header_crc32`, `active_valid`, `target_slot` and `force` in each copy and
+can run in CI.  `make package-hwlink` publishes the canonical schema,
+generated Python package, `mkimage.py`, `boot_layout.h` and the vendored
+FlatBuffers runtime as one `build/soccentric-hwlink` bundle (P3-8).
 
 The C headers were generated with flatcc 0.6.1:
 
@@ -31,9 +36,10 @@ flatc --python -o tools/generated protocol/hwlink.fbs
 
 The Python flatbuffers runtime is vendored in `../tools/vendor`.
 
-Protocol minor 1 appends `ImageHeader.header_crc32` (IMG-001).  The field is
-optional on the wire: older hosts may omit it and BOOT recomputes the header
-CRC from the remaining fields.
+Protocol minor 1 appended `ImageHeader.header_crc32` (IMG-001).  The field
+is optional on the wire: older hosts may omit it and BOOT recomputes the
+header CRC from the remaining fields.  Protocol minor 2 appends the BootInfo
+and UpdateBegin fields listed above; `bootctl.py` reports minor 2.
 
 `Message.body` is an append-only union: add new members at the end and raise
 the protocol minor version (LNK-013).  The file identifier is `HWLK`.

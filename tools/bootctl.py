@@ -8,11 +8,15 @@
 # SRS:     BHOST-004; SRS-BOOT-F767 section 9 and Appendix A
 #
 # Usage:
-#   tools/bootctl.py info
-#   tools/bootctl.py update build/app.img --activate
-#   tools/bootctl.py activate
-#   tools/bootctl.py reset
-#   tools/bootctl.py set-baud 921600
+#   tools/bootctl.py info [--json]
+#   tools/bootctl.py update build/app.img --activate --wait
+#   tools/bootctl.py update --both --a a.img --b b.img --json
+#   tools/bootctl.py activate [--no-wait]
+#   tools/bootctl.py enter | wait | reset | set-baud 921600
+#
+# Every command accepts --json (one JSON object per line).  If the
+# application is running, bootctl sends EnterBootloader and reopens the
+# port unless --no-enter is given.
 #
 # The protocol code is generated from protocol/hwlink.fbs by flatc and the
 # Python flatbuffers runtime is vendored under tools/vendor.  Only pyserial
@@ -33,21 +37,26 @@ sys.path.insert(0, str(TOOLS / "vendor"))
 
 import flatbuffers  # noqa: E402
 from hwlink import Ack, Activate, BootInfo, EnterBootloader, GetBootInfo, \
-    Hello, HelloReply, ImageHeader, Message, Nak, Progress, Reset, SetBaud, \
-    UpdateAbort, UpdateBegin, UpdateData, UpdateEnd, UpdateResult  # noqa: E402
+    GetStatus, Hello, HelloReply, ImageHeader, Message, Nak, Progress, Reset, \
+    SetBaud, Status, UpdateAbort, UpdateBegin, UpdateData, UpdateEnd, \
+    UpdateResult  # noqa: E402
 # Enums live in modules of the same name; import the classes themselves.
 from hwlink.BootOutcome import BootOutcome  # noqa: E402
 from hwlink.Error import Error  # noqa: E402
+from hwlink.HealthState import HealthState  # noqa: E402
 from hwlink.Role import Role  # noqa: E402
 from hwlink.Slot import Slot  # noqa: E402
+from hwlink.TrialState import TrialState  # noqa: E402
 
 PROTOCOL_MAJOR = 1
-PROTOCOL_MINOR = 1
+PROTOCOL_MINOR = 2
 HWLINK_FLAG_RESPONSE = 1 << 0
 HWLINK_FLAG_EVENT = 1 << 1
 MAX_FRAME = 2048
 HEADER_SIZE = 256
+ACTIVATE_TIMEOUT = 5.0
 VERBOSE = False
+JSON_OUT = False
 LOAD_ADDRESS = 0x0800C000
 SLOT_SIZE = 0x000F4000
 IMAGE_MAGIC = 0x48574249
@@ -59,6 +68,15 @@ def vprint(*args) -> None:
     """Print only with --verbose."""
     if VERBOSE:
         print(*args, flush=True)
+
+
+def emit(obj, **fields) -> None:
+    """One JSON object per line for --json (P2-7)."""
+    if not JSON_OUT:
+        return
+    payload = dict(fields)
+    payload.update(obj)
+    print(json.dumps(payload, separators=(",", ":")), flush=True)
 
 
 def error_name(value: int) -> str:
@@ -184,14 +202,30 @@ class LinkError(RuntimeError):
 
 
 class Link:
-    def __init__(self, port: str, baud: int, timeout: float):
-        import serial
+    def __init__(self, port: str, baud: int, timeout: float,
+                 auto_enter: bool = True, json_output: bool = False):
         self.port = port
+        self.baud = baud
         self.timeout = timeout
-        self.ser = serial.Serial(port, baud, timeout=0.05, write_timeout=2)
+        self.auto_enter = auto_enter
+        self.json_output = json_output
+        self.ser = None
         self.seq = 0
         self.buffer = bytearray()
         self.verbose = False
+        self.open()
+
+    def open(self):
+        import serial
+        if self.ser is not None and self.ser.is_open:
+            self.ser.close()
+        self.ser = serial.Serial(self.port, self.baud, timeout=0.05,
+                                 write_timeout=2)
+        self.buffer.clear()
+        return self
+
+    def reopen(self):
+        return self.open()
 
     def close(self):
         if self.ser is not None and self.ser.is_open:
@@ -241,9 +275,17 @@ class Link:
         progress.Init(message.Body().Bytes, message.Body().Pos)
         done = progress.Done()
         total = progress.Total()
+        operation = text(progress.Operation())
         percent = (100 * done / total) if total else 0
-        print(f"  progress {text(progress.Operation())}: "
-              f"{done}/{total} ({percent:.0f}%)", flush=True)
+        if self.json_output:
+            emit({"event": "progress", "operation": operation,
+                  "done": done, "total": total, "percent": percent})
+            return
+        if operation == "erase":
+            print(f"  erasing slot sector {done}/{total}", flush=True)
+        else:
+            print(f"  progress {operation}: {done}/{total} "
+                  f"({percent:.0f}%)", flush=True)
 
     def request(self, payload: bytes, timeout: float | None = None,
                 seq: int | None = None, retries: int = 1) -> bytes:
@@ -274,23 +316,73 @@ class Link:
                 break
         raise LinkError(f"timeout waiting for reply to sequence {seq}")
 
-    def hello(self) -> HelloReply:
+    def _hello_once(self, timeout: float | None = None) -> HelloReply:
         builder = flatbuffers.Builder(256)
         host = builder.CreateString("bootctl")
-        version = builder.CreateString("0.1.0")
+        version = builder.CreateString("0.2.0")
         Hello.HelloStart(builder)
         Hello.HelloAddHostName(builder, host)
         Hello.HelloAddHostVersion(builder, version)
         Hello.HelloAddProtocolMinor(builder, PROTOCOL_MINOR)
         body = Hello.HelloEnd(builder)
-        response = self.request(finish(builder, 1, body))
+        response = self.request(finish(builder, 1, body), timeout=timeout)
         message = Message.Message.GetRootAs(response, 0)
         if message.BodyType() != 2:   # HelloReply
             raise LinkError("device did not answer Hello with HelloReply")
-        reply = as_table(message.Body(), HelloReply.HelloReply)
-        if reply.Role() != Role.BOOTLOADER:
-            raise LinkError(f"device role is {reply.Role()}, not BOOTLOADER")
-        return reply
+        return as_table(message.Body(), HelloReply.HelloReply)
+
+    def _enter_bootloader_request(self) -> None:
+        builder = flatbuffers.Builder(16)
+        EnterBootloader.EnterBootloaderStart(builder)
+        body = EnterBootloader.EnterBootloaderEnd(builder)
+        response = self.request(finish(builder, 22, body), timeout=2.0)
+        message = Message.Message.GetRootAs(response, 0)
+        if message.BodyType() == 7:  # Nak
+            nak = as_table(message.Body(), Nak.Nak)
+            raise LinkError(f"EnterBootloader: {error_name(nak.Error())}: "
+                            f"{text(nak.Detail())}")
+
+    def hello(self, require_boot: bool = True,
+              timeout: float | None = None) -> HelloReply:
+        """Hello with P1-1 auto-enter.
+
+        A running application answers Hello with role APPLICATION.  Unless
+        require_boot is false, send EnterBootloader, reopen the port and
+        retry Hello until BOOT answers.
+        """
+        reply = self._hello_once(timeout)
+        if reply.Role() == Role.BOOTLOADER or not require_boot:
+            return reply
+        if not self.auto_enter:
+            raise LinkError(
+                "device is running the application; use 'bootctl enter' or "
+                "do not pass --no-enter")
+
+        vprint(f"hello        : role {reply.Role()} (application); "
+               f"sending EnterBootloader")
+        last_error: Exception | None = None
+        try:
+            self._enter_bootloader_request()
+        except LinkError as error:
+            # The application may reset before its Ack reaches us.  Treat a
+            # lost reply as success-pending and confirm by retrying Hello.
+            last_error = error
+        self.close()
+        time.sleep(0.25)
+
+        deadline = time.monotonic() + 6.0
+        while time.monotonic() < deadline:
+            try:
+                self.open()
+                remaining = max(0.5, min(1.5, deadline - time.monotonic()))
+                reply = self._hello_once(timeout=remaining)
+                if reply.Role() == Role.BOOTLOADER:
+                    return reply
+            except (LinkError, OSError) as error:
+                last_error = error
+            self.close()
+            time.sleep(0.2)
+        raise LinkError(f"could not enter BOOT: {last_error}")
 
 
 def parse_image(path: pathlib.Path):
@@ -359,6 +451,10 @@ def boot_info_dict(reply, info) -> dict:
         "flash_mode": "DUAL_BANK" if reply.FlashMode() == 2 else "SINGLE_BANK",
         "detail": text(reply.Detail()),
         "active_slot": slot_name(info.ActiveSlot()),
+        "active_valid": bool(info.ActiveValid()),
+        "target_slot": slot_name(info.TargetSlot()),
+        "boot_version": text(info.BootVersion()),
+        "boot_build": text(info.BootBuild()),
         "last_outcome": outcome_name(info.LastOutcome()),
         "rejected_slot": slot_name(info.RejectedSlot()),
         "slots": slots,
@@ -376,6 +472,121 @@ def read_boot_info(link: Link):
     return as_table(message.Body(), BootInfo.BootInfo)
 
 
+def read_status(link: Link):
+    """GetStatus from a running application (used by --both / --wait)."""
+    builder = flatbuffers.Builder(32)
+    GetStatus.GetStatusStart(builder)
+    body = GetStatus.GetStatusEnd(builder)
+    response = link.request(finish(builder, 23, body))
+    message = Message.Message.GetRootAs(response, 0)
+    if message.BodyType() != 24:   # Status
+        raise LinkError("device did not answer GetStatus with Status")
+    return as_table(message.Body(), Status.Status)
+
+
+def trial_name(value: int) -> str:
+    return {
+        TrialState.CONFIRMED: "CONFIRMED",
+        TrialState.PENDING: "PENDING",
+    }.get(value, "UNKNOWN")
+
+
+def health_name(value: int) -> str:
+    return {
+        HealthState.NOT_REQUIRED: "NOT_REQUIRED",
+        HealthState.RUNNING: "RUNNING",
+        HealthState.PASSED: "PASSED",
+        HealthState.FAILED: "FAILED",
+    }.get(value, "UNKNOWN")
+
+
+def enter_boot_from_application(port: str, baud: int) -> None:
+    """P1-1: ask a running application to reset into BOOT."""
+    link = Link(port, baud, 2.0, auto_enter=False)
+    try:
+        reply = link.hello(require_boot=False, timeout=2.0)
+        if reply.Role() == Role.BOOTLOADER:
+            return
+        link._enter_bootloader_request()
+    finally:
+        link.close()
+    time.sleep(0.3)
+
+
+def open_boot_link(port: str, baud: int, timeout: float) -> Link:
+    """Open BOOT, entering it from the application when necessary."""
+    for attempt in range(3):
+        link = None
+        try:
+            link = Link(port, baud, timeout, auto_enter=True)
+            reply = link.hello()
+            if reply.Role() == Role.BOOTLOADER:
+                return link
+        except (LinkError, OSError):
+            if link is not None:
+                link.close()
+            if attempt == 2:
+                raise
+            time.sleep(0.5)
+    raise LinkError("could not open BOOT")
+
+
+def wait_for_confirmation(port: str, baud: int, timeout: float,
+                          expected_slot: str | None = None) -> dict:
+    """P2-3: wait until the application confirms the freshly activated slot.
+
+    Returns a status dict.  A rollback is reported when BOOT boots the other
+    slot instead or when the application reports a different slot/failed
+    health.  The application must implement GetStatus (the BOOT contract
+    already defines it)."""
+    deadline = time.monotonic() + timeout
+    last = "no reply"
+    while time.monotonic() < deadline:
+        link = None
+        try:
+            link = Link(port, baud, 1.0, auto_enter=False)
+            reply = link.hello(require_boot=False, timeout=1.0)
+            if reply.Role() == Role.BOOTLOADER:
+                # The board reset back into BOOT: usually a rollback or a
+                # failed image.  Read the boot info to report it.
+                info = read_boot_info(link)
+                data = boot_info_dict(reply, info)
+                if data["last_outcome"] == "ROLLED_BACK":
+                    return {"state": "rolled_back", **data}
+                last = f"still in BOOT ({data['last_outcome']})"
+            else:
+                status = read_status(link)
+                slot = slot_name(status.Slot())
+                trial = trial_name(status.Trial())
+                health = health_name(status.Health())
+                data = {
+                    "state": "confirmed" if trial == "CONFIRMED" else
+                             "pending",
+                    "slot": slot,
+                    "trial": trial,
+                    "trial_count": status.TrialCount(),
+                    "health": health,
+                    "version": text(status.Version()),
+                    "commit": text(status.Commit()),
+                }
+                if expected_slot in ("A", "B") and slot != expected_slot:
+                    data["state"] = "rolled_back"
+                    return data
+                if health == "FAILED":
+                    data["state"] = "failed"
+                    return data
+                if data["state"] == "confirmed":
+                    return data
+                last = f"slot {slot} {trial}, health {health}"
+        except (LinkError, OSError) as error:
+            last = str(error)
+        finally:
+            if link is not None:
+                link.close()
+        time.sleep(0.5)
+    raise LinkError(f"application did not confirm the trial: {last}")
+
+
 def cmd_info(link: Link, args) -> int:
     reply = link.hello()
     info = read_boot_info(link)
@@ -389,7 +600,11 @@ def cmd_info(link: Link, args) -> int:
     print(f"build        : {text(reply.BuildTime())}")
     print(f"flash mode   : {'DUAL_BANK' if reply.FlashMode() == 2 else 'SINGLE_BANK'}")
     print(f"detail       : {text(reply.Detail())}")
-    print(f"active slot  : {slot_name(info.ActiveSlot())}")
+    print(f"active slot  : {slot_name(info.ActiveSlot())}"
+          f"{' (none)' if not info.ActiveValid() else ''}")
+    print(f"target slot  : {slot_name(info.TargetSlot())} (BOOT decides)")
+    print(f"boot build   : {text(info.BootVersion())} "
+          f"({text(info.BootBuild())})")
     print(f"last outcome : {outcome_name(info.LastOutcome())}")
     print(f"rejected slot: {slot_name(info.RejectedSlot())}")
     for index in range(info.SlotsLength()):
@@ -406,7 +621,7 @@ def cmd_info(link: Link, args) -> int:
     return 0
 
 
-def send_update_begin(link: Link, image) -> None:
+def send_update_begin(link: Link, image, force: bool = False) -> None:
     builder = flatbuffers.Builder(1024)
     git = builder.CreateByteVector(image["git_commit"])
     name = builder.CreateString(
@@ -429,6 +644,7 @@ def send_update_begin(link: Link, image) -> None:
 
     UpdateBegin.UpdateBeginStart(builder)
     UpdateBegin.UpdateBeginAddHeader(builder, header)
+    UpdateBegin.UpdateBeginAddForce(builder, force)
     body = UpdateBegin.UpdateBeginEnd(builder)
     response = link.request(finish(builder, 13, body))
     message = Message.Message.GetRootAs(response, 0)
@@ -503,9 +719,13 @@ def print_image(image, path: str) -> None:
 def print_boot_target(link: Link) -> str | None:
     info = read_boot_info(link)
     active = slot_name(info.ActiveSlot())
-    target = "B" if active == "A" else "A"
-    vprint(f"boot info    : active {active}, target {target} "
-           f"@ 0x{slot_base(target):08x}")
+    target = slot_name(info.TargetSlot())
+    if target not in ("A", "B"):
+        target = "A" if not info.ActiveValid() else (
+            "B" if active == "A" else "A")
+    vprint(f"boot info    : active {active} "
+           f"({'valid' if info.ActiveValid() else 'none'}), "
+           f"target {target} @ 0x{slot_base(target):08x}")
     for index in range(info.SlotsLength()):
         slot = info.Slots(index)
         vprint(f"  slot {slot_name(slot.Slot())}: present={slot.Present()} "
@@ -515,30 +735,15 @@ def print_boot_target(link: Link) -> str | None:
     return target
 
 
-def cmd_update(link: Link, args) -> int:
-    image = parse_image(pathlib.Path(args.image))
-    print_image(image, args.image)
-    reply = link.hello()
-    if VERBOSE:
-        mode = "DUAL_BANK" if reply.FlashMode() == 2 else "SINGLE_BANK"
-        vprint(f"hello        : {text(reply.FirmwareName())} "
-               f"{text(reply.Version())} ({text(reply.Commit())}), "
-               f"protocol {reply.ProtocolMajor()}.{reply.ProtocolMinor()}, "
-               f"flash mode {mode}")
-    target = None
-    if VERBOSE:
-        try:
-            target = print_boot_target(link)
-        except LinkError as error:
-            vprint(f"boot info    : unavailable ({error})")
-
-    if getattr(args, "fast", False):
-        change_baud(link, 921600)
-
+def upload_image(link: Link, image, args, target: str | None) -> dict:
+    """Send UpdateBegin/Data/End and return the verified result."""
     started = time.monotonic()
     try:
-        send_update_begin(link, image)
-        print("UpdateBegin: ok")
+        send_update_begin(link, image, force=getattr(args, "force", False))
+        if not JSON_OUT:
+            print("UpdateBegin: ok")
+        emit({"event": "update_begin", "image_size": image["image_size"],
+              "image_crc32": image["image_crc32"], "target_slot": target})
         vprint(f"  header written to the metadata sector; "
                f"{image['image_size']} bytes to flash")
 
@@ -564,10 +769,14 @@ def cmd_update(link: Link, args) -> int:
                        f"{rate:7.1f} KB/s  {preview}")
             offset = next_offset
             percent = (100 * offset / len(body)) if body else 100
-            if not VERBOSE and (percent >= last_report + 10 or
-                                offset == len(body)):
-                print(f"  written {offset}/{len(body)} ({percent:.0f}%)",
-                      flush=True)
+            if percent >= last_report + 10 or offset == len(body):
+                if JSON_OUT:
+                    emit({"event": "progress", "operation": "upload",
+                          "done": offset, "total": len(body),
+                          "percent": percent})
+                elif not VERBOSE:
+                    print(f"  written {offset}/{len(body)} "
+                          f"({percent:.0f}%)", flush=True)
                 last_report = percent
 
         builder = flatbuffers.Builder(32)
@@ -584,50 +793,229 @@ def cmd_update(link: Link, args) -> int:
         if not result.Success():
             raise LinkError(f"UpdateEnd: {error_name(result.Error())}: "
                             f"{text(result.Detail())}")
-        print(f"UpdateEnd: verified, CRC 0x{result.ImageCrc32():08x}")
+        if not JSON_OUT:
+            print(f"UpdateEnd: verified, CRC 0x{result.ImageCrc32():08x}")
+        emit({"event": "update_end", "status": "verified",
+              "image_crc32": result.ImageCrc32()})
         if VERBOSE:
             total = time.monotonic() - started
             rate = image["image_size"] / total / 1024 if total else 0
             vprint(f"  verified {image['image_size']} bytes in "
                    f"{verify_time:.2f} s; flash+verify {total:.2f} s, "
                    f"{rate:.1f} KB/s")
+        return {"image": image, "crc": result.ImageCrc32(),
+                "seconds": time.monotonic() - started}
     except LinkError:
         send_update_abort(link)
         raise
 
-    if args.activate:
-        cmd_activate(link, args)
-    return 0
 
-
-def cmd_enter(link: Link, _args) -> int:
-    """Ask a running demo application to reset into the bootloader."""
-    link.hello()
-    builder = flatbuffers.Builder(16)
-    EnterBootloader.EnterBootloaderStart(builder)
-    body = EnterBootloader.EnterBootloaderEnd(builder)
-    response = link.request(finish(builder, 22, body))
-    message = Message.Message.GetRootAs(response, 0)
-    if message.BodyType() == 7:  # Nak
-        nak = as_table(message.Body(), Nak.Nak)
-        raise LinkError(f"EnterBootloader: {error_name(nak.Error())}: "
-                        f"{text(nak.Detail())}")
-    print("EnterBootloader: ok, the application is resetting into BOOT")
-    return 0
-
-
-def cmd_activate(link: Link, _args) -> int:
-    link.hello()
+def activate_slot(link: Link, expected_slot: str | None = None) -> str:
+    """Activate and reset.  Returns "ok", or "pending" when the Ack was
+    lost (P2-5); callers then confirm with GetStatus/GetBootInfo."""
     builder = flatbuffers.Builder(32)
     Activate.ActivateStart(builder)
     body = Activate.ActivateEnd(builder)
-    response = link.request(finish(builder, 17, body))
+    try:
+        response = link.request(finish(builder, 17, body),
+                                timeout=max(link.timeout,
+                                            ACTIVATE_TIMEOUT))
+    except LinkError as error:
+        if not JSON_OUT:
+            print("Activate: reply lost; checking the new slot instead")
+        emit({"event": "activate", "status": "pending",
+              "reason": str(error), "slot": expected_slot})
+        return "pending"
     message = Message.Message.GetRootAs(response, 0)
     if message.BodyType() == 7:
         nak = as_table(message.Body(), Nak.Nak)
         raise LinkError(f"Activate: {error_name(nak.Error())}: "
                         f"{text(nak.Detail())}")
-    print("Activate: ok, device is resetting")
+    if not JSON_OUT:
+        print("Activate: ok, device is resetting")
+    emit({"event": "activate", "status": "ok", "slot": expected_slot})
+    return "ok"
+
+
+def _image_for_slot(args, slot: str):
+    """Pick the image for a slot from --a/--b or the positional image."""
+    a_path = getattr(args, "a", None)
+    b_path = getattr(args, "b", None)
+    if a_path and b_path:
+        return a_path if slot == "A" else b_path
+    if a_path or b_path:
+        raise LinkError("--a and --b must be given together")
+    return args.image
+
+
+def cmd_update_both(link: Link, args) -> int:
+    """P1-2: update/activate the inactive slot, wait for CONFIRMED, then
+    enter BOOT and do the same for the other slot."""
+    if not args.image and not (args.a and args.b):
+        raise LinkError("update --both needs IMAGE or --a IMG --b IMG")
+
+    port, baud = link.port, link.baud
+    link.close()
+    boot = open_boot_link(port, baud, args.timeout)
+    try:
+        reply = boot.hello()
+        info = read_boot_info(boot)
+        target = slot_name(info.TargetSlot())
+        if target not in ("A", "B"):
+            target = "A" if not info.ActiveValid() else (
+                "B" if slot_name(info.ActiveSlot()) == "A" else "A")
+    finally:
+        boot.close()
+
+    stages = []
+    for index, slot in enumerate((target, "B" if target == "A" else "A")):
+        if index > 0:
+            enter_boot_from_application(port, baud)
+        path = _image_for_slot(args, slot)
+        image = parse_image(pathlib.Path(path))
+        if not JSON_OUT:
+            print(f"== slot {slot}: {path} ==")
+        emit({"event": "stage", "stage": slot, "status": "updating",
+              "image": str(path)})
+        boot = open_boot_link(port, baud, args.timeout)
+        try:
+            reply = boot.hello()
+            info = read_boot_info(boot)
+            actual = slot_name(info.TargetSlot())
+            if actual in ("A", "B") and actual != slot:
+                raise LinkError(f"BOOT targets slot {actual}, not {slot}")
+            if getattr(args, "fast", False):
+                change_baud(boot, 921600)
+            upload_image(boot, image, args, slot)
+            activate_slot(boot, slot)
+        finally:
+            boot.close()
+        confirmation = wait_for_confirmation(port, baud,
+                                             args.wait_timeout, slot)
+        if confirmation.get("state") in ("rolled_back", "failed"):
+            emit({"event": "stage", "stage": slot,
+                  "status": confirmation.get("state"), **confirmation})
+            raise LinkError(f"slot {slot} did not confirm "
+                            f"({confirmation.get('state')})")
+        stages.append({"slot": slot, "image": str(path),
+                       "status": "confirmed", **confirmation})
+        if not JSON_OUT:
+            print(f"slot {slot}: confirmed by the application")
+        emit({"event": "stage", "stage": slot, "status": "confirmed",
+              **confirmation})
+
+    enter_boot_from_application(port, baud)
+    final = open_boot_link(port, baud, args.timeout)
+    try:
+        final_reply = final.hello()
+        final_info = read_boot_info(final)
+        final_dict = boot_info_dict(final_reply, final_info)
+        if not JSON_OUT:
+            for index in range(final_info.SlotsLength()):
+                slot = final_info.Slots(index)
+                print(f"slot {slot_name(slot.Slot())}: valid={slot.Valid()} "
+                      f"confirmed={slot.Confirmed()} "
+                      f"seq={slot.Sequence()}")
+        emit({"event": "result", "command": "update --both",
+              "status": "ok", "stages": stages, "info": final_dict})
+    finally:
+        final.close()
+    return 0
+
+
+def cmd_update(link: Link, args) -> int:
+    if getattr(args, "both", False) or getattr(args, "a", None) or \
+            getattr(args, "b", None):
+        return cmd_update_both(link, args)
+    if not args.image:
+        raise LinkError("update needs an image")
+
+    image = parse_image(pathlib.Path(args.image))
+    if not JSON_OUT:
+        print_image(image, args.image)
+    reply = link.hello()
+    if VERBOSE:
+        mode = "DUAL_BANK" if reply.FlashMode() == 2 else "SINGLE_BANK"
+        vprint(f"hello        : {text(reply.FirmwareName())} "
+               f"{text(reply.Version())} ({text(reply.Commit())}), "
+               f"protocol {reply.ProtocolMajor()}.{reply.ProtocolMinor()}, "
+               f"flash mode {mode}")
+    target = None
+    try:
+        info = read_boot_info(link)
+        target = slot_name(info.TargetSlot())
+        if target not in ("A", "B"):
+            target = "A" if not info.ActiveValid() else (
+                "B" if slot_name(info.ActiveSlot()) == "A" else "A")
+        if VERBOSE:
+            print_boot_target(link)
+        emit({"event": "boot_info", "active_slot":
+              slot_name(info.ActiveSlot()), "active_valid":
+              bool(info.ActiveValid()), "target_slot": target})
+    except LinkError as error:
+        vprint(f"boot info    : unavailable ({error})")
+
+    if getattr(args, "fast", False):
+        change_baud(link, 921600)
+
+    result = upload_image(link, image, args, target)
+
+    if args.activate:
+        state = activate_slot(link, target)
+        if state == "pending" or getattr(args, "wait", False):
+            link.close()
+            confirmation = wait_for_confirmation(
+                link.port, link.baud, args.wait_timeout, target)
+            if not JSON_OUT:
+                print(f"application: slot {confirmation.get('slot')} "
+                      f"{confirmation.get('trial')} "
+                      f"(health {confirmation.get('health')})")
+            emit({"event": "confirm", **confirmation})
+            if confirmation.get("state") in ("rolled_back", "failed"):
+                raise LinkError(
+                    f"the new image did not confirm "
+                    f"({confirmation.get('state')})")
+    emit({"event": "result", "command": "update", "status": "ok",
+          "target_slot": target, "image": args.image,
+          "image_crc32": result["crc"],
+          "seconds": round(result["seconds"], 3)})
+    return 0
+
+
+def cmd_enter(link: Link, _args) -> int:
+    """Ask a running application to reset into the bootloader."""
+    reply = link.hello(require_boot=False)
+    if reply.Role() == Role.BOOTLOADER:
+        if not JSON_OUT:
+            print("EnterBootloader: already in BOOT")
+        emit({"event": "enter", "status": "already-in-boot"})
+        return 0
+    link._enter_bootloader_request()
+    if not JSON_OUT:
+        print("EnterBootloader: ok, the application is resetting into BOOT")
+    emit({"event": "enter", "status": "ok"})
+    return 0
+
+
+def cmd_activate(link: Link, args) -> int:
+    reply = link.hello()
+    info = read_boot_info(link)
+    target = slot_name(info.TargetSlot())
+    state = activate_slot(link, target)
+    if state == "pending" or getattr(args, "wait", True):
+        link.close()
+        confirmation = wait_for_confirmation(
+            link.port, link.baud, getattr(args, "wait_timeout", 30.0),
+            target)
+        if not JSON_OUT:
+            print(f"application: slot {confirmation.get('slot')} "
+                  f"{confirmation.get('trial')}")
+        emit({"event": "confirm", **confirmation})
+        if confirmation.get("state") in ("rolled_back", "failed"):
+            raise LinkError(f"the activated image did not confirm "
+                            f"({confirmation.get('state')})")
+    emit({"event": "result", "command": "activate", "status": "ok",
+          "target_slot": target})
     return 0
 
 
@@ -637,7 +1025,27 @@ def cmd_reset(link: Link, _args) -> int:
     Reset.ResetStart(builder)
     body = Reset.ResetEnd(builder)
     link.request(finish(builder, 10, body))
-    print("Reset: ok")
+    if not JSON_OUT:
+        print("Reset: ok")
+    emit({"event": "result", "command": "reset", "status": "ok"})
+    return 0
+
+
+def cmd_wait(link: Link, args) -> int:
+    """Wait for the running application to confirm its trial slot."""
+    port, baud = link.port, link.baud
+    link.close()
+    confirmation = wait_for_confirmation(port, baud, args.wait_timeout)
+    if not JSON_OUT:
+        print(f"application: slot {confirmation.get('slot')} "
+              f"{confirmation.get('trial')}")
+    if confirmation.get("state") in ("rolled_back", "failed"):
+        emit({"event": "result", "command": "wait",
+              "status": confirmation.get("state"), **confirmation})
+        raise LinkError(f"application did not confirm "
+                        f"({confirmation.get('state')})")
+    emit({"event": "result", "command": "wait", "status": "ok",
+          **confirmation})
     return 0
 
 
@@ -654,9 +1062,12 @@ def change_baud(link: Link, rate: int) -> None:
         raise LinkError(f"SetBaud: {error_name(nak.Error())}: "
                         f"{text(nak.Detail())}")
     time.sleep(0.1)
+    link.baud = rate
     link.ser.baudrate = rate
     link.ser.reset_input_buffer()
-    print(f"SetBaud: {rate}")
+    if not JSON_OUT:
+        print(f"SetBaud: {rate}")
+    emit({"event": "set_baud", "rate": rate})
 
 
 def cmd_set_baud(link: Link, args) -> int:
@@ -665,12 +1076,27 @@ def cmd_set_baud(link: Link, args) -> int:
     return 0
 
 
+def list_stlink_ports() -> list[str]:
+    """P2-5: ST-LINK VCP ports (VID 0x0483) on Linux, macOS and Windows."""
+    try:
+        from serial.tools import list_ports
+    except ImportError:
+        return sorted(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*"))
+
+    ports = list(list_ports.comports())
+    stlink = sorted(port.device for port in ports
+                    if getattr(port, "vid", None) == 0x0483)
+    if stlink:
+        return stlink
+    return sorted(port.device for port in ports)
+
+
 def find_port() -> str:
-    candidates = sorted(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*"))
+    candidates = list_stlink_ports()
     if not candidates:
-        raise LinkError("no /dev/ttyACM* or /dev/ttyUSB* port found")
+        raise LinkError("no ST-LINK serial port found")
     if len(candidates) > 1:
-        raise LinkError("several serial ports found; use --port: " +
+        raise LinkError("several ST-LINK serial ports found; use --port: " +
                         ", ".join(candidates))
     return candidates[0]
 
@@ -678,10 +1104,13 @@ def find_port() -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default=None,
-                        help="serial port (default: first ttyACM/ttyUSB)")
+                        help="serial port (default: first ST-LINK VCP)")
     parser.add_argument("--baud", type=int, default=115200,
                         choices=(115200, 921600))
     parser.add_argument("--timeout", type=float, default=10.0)
+    parser.add_argument("--no-enter", action="store_true",
+                        help="do not send EnterBootloader when an "
+                             "application is running (P1-1)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="log every chunk, offset, flash address and frame")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -690,37 +1119,79 @@ def main() -> int:
     info.add_argument("--json", action="store_true",
                       help="print machine-readable JSON")
     update = sub.add_parser("update", help="write and verify an image")
-    update.add_argument("image")
+    update.add_argument("image", nargs="?")
     update.add_argument("--chunk", type=int, default=1024)
     update.add_argument("--activate", action="store_true",
                         help="activate and reset after a successful verify")
+    update.add_argument("--wait", action="store_true",
+                        help="wait for the application to confirm the trial")
+    update.add_argument("--wait-timeout", type=float, default=30.0,
+                        help="seconds to wait for CONFIRMED (30)")
     update.add_argument("--fast", action="store_true",
                         help="switch to 921600 baud for the upload")
-    sub.add_parser("activate", help="activate the verified slot and reset")
-    sub.add_parser("enter", help="ask a running application to enter BOOT")
-    sub.add_parser("reset", help="leave BOOT and boot normally")
+    update.add_argument("--force", action="store_true",
+                        help="bench only: allow an update while the active "
+                             "slot is on trial")
+    update.add_argument("--both", action="store_true",
+                        help="update + activate both slots and verify the "
+                             "application confirms each one")
+    update.add_argument("--a", metavar="IMG", default=None,
+                        help="image for slot A (with --b and --both)")
+    update.add_argument("--b", metavar="IMG", default=None,
+                        help="image for slot B (with --a and --both)")
+    update.add_argument("--json", action="store_true",
+                        help="print one JSON object per line")
+
+    activate = sub.add_parser("activate",
+                              help="activate the verified slot and reset")
+    activate.add_argument("--no-wait", dest="wait", action="store_false",
+                          default=True,
+                          help="do not wait for the application to confirm")
+    activate.add_argument("--wait-timeout", type=float, default=30.0)
+    activate.add_argument("--json", action="store_true")
+    enter = sub.add_parser("enter",
+                           help="ask a running application to enter BOOT")
+    enter.add_argument("--json", action="store_true")
+    wait = sub.add_parser("wait",
+                          help="wait for the application to confirm its trial")
+    wait.add_argument("--wait-timeout", type=float, default=30.0)
+    wait.add_argument("--json", action="store_true")
+    reset = sub.add_parser("reset", help="leave BOOT and boot normally")
+    reset.add_argument("--json", action="store_true")
     set_baud = sub.add_parser("set-baud", help="switch the link baud rate")
     set_baud.add_argument("rate", type=int, choices=(115200, 921600))
+    set_baud.add_argument("--json", action="store_true")
 
     args = parser.parse_args()
     if args.command == "update" and (args.chunk < 1 or args.chunk > 1024):
         parser.error("--chunk must be 1..1024")
+    if args.command == "update" and not args.image and \
+            not (args.a and args.b):
+        parser.error("update needs IMAGE or --a IMG --b IMG")
+    if args.command == "update" and bool(args.a) != bool(args.b):
+        parser.error("--a and --b must be given together")
 
-    global VERBOSE
+    global VERBOSE, JSON_OUT
+    JSON_OUT = bool(getattr(args, "json", False))
     # Keep --json output machine-readable even if -v is also given.
-    VERBOSE = args.verbose and not (
-        args.command == "info" and getattr(args, "json", False))
+    VERBOSE = args.verbose and not JSON_OUT
 
+    link = None
     try:
         port = args.port or find_port()
-        link = Link(port, args.baud, args.timeout)
+        link = Link(port, args.baud, args.timeout,
+                    auto_enter=not args.no_enter, json_output=JSON_OUT)
         link.verbose = VERBOSE
     except ImportError:
         print("bootctl: pyserial is required: pip install pyserial",
               file=sys.stderr)
         return 1
     except (LinkError, OSError) as error:
-        print(f"bootctl: {error}", file=sys.stderr)
+        if JSON_OUT:
+            emit({"event": "error", "command": args.command,
+                  "status": "error", "error": str(error)})
+        else:
+            print(f"bootctl: {error}", file=sys.stderr)
         return 1
 
     commands = {
@@ -728,6 +1199,7 @@ def main() -> int:
         "update": cmd_update,
         "activate": cmd_activate,
         "enter": cmd_enter,
+        "wait": cmd_wait,
         "reset": cmd_reset,
         "set-baud": cmd_set_baud,
     }
@@ -735,12 +1207,17 @@ def main() -> int:
     try:
         return commands[args.command](link, args)
     except (LinkError, OSError) as error:
-        print(f"bootctl: {error}", file=sys.stderr)
+        if JSON_OUT:
+            emit({"event": "error", "command": args.command,
+                  "status": "error", "error": str(error)})
+        else:
+            print(f"bootctl: {error}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130
     finally:
-        link.close()
+        if link is not None:
+            link.close()
 
 
 if __name__ == "__main__":

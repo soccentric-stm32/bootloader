@@ -6,13 +6,14 @@
 # Date:    2026-11-04
 # Target:  NUCLEO-F767ZI (STM32F767ZI, on-board ST-LINK/V2.1)
 #
-# Two modes:
+# Three modes:
 #   Bootloader   program BOOT (.elf/.hex/.bin) over SWD through OpenOCD,
 #                either in the stm32-dev container or with the host tools.
 #   Application  update an application image (.img) over the ST-LINK VCP
-#                with the HWLINK protocol (tools/bootctl.py).  BOOT only
-#                writes the inactive slot (UPD-001), so the GUI reads the
-#                boot info, preselects the alternate slot and explains why.
+#                with the HWLINK protocol (tools/bootctl.py).  The target
+#                slot is read-only and comes from BOOT's BootInfo.
+#   Production   ordered build/provision/flash A+B/verify workflow.  The
+#                device model and QProcess queue live in tools/gui/.
 #
 # Usage:
 #   make gui                (installs PySide6 first: make gui-deps)
@@ -74,6 +75,14 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+try:
+    from gui.device import parse_boot_info, stlink_ports
+    from gui.runner import Job, Runner
+except ImportError:  # pragma: no cover - running from an unusual CWD
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from gui.device import parse_boot_info, stlink_ports
+    from gui.runner import Job, Runner
 
 ROOT = Path(__file__).resolve().parent.parent
 DEV_SCRIPT = ROOT / "scripts" / "docker-dev.sh"
@@ -329,7 +338,11 @@ class FlashWindow(QMainWindow):
         self.mode = "boot"
         self.firmware_text = {"boot": "", "app": ""}
         self.active_slot: str | None = None
+        self.target_slot: str | None = None
         self.flash_mode: str | None = None
+        self.boot_version: str | None = None
+        self.production_steps: dict[str, QLabel] = {}
+        self.current_step: str | None = None
 
         self.process = QProcess(self)
         self.process.setProcessChannelMode(QProcess.MergedChannels)
@@ -340,6 +353,12 @@ class FlashWindow(QMainWindow):
         self.info_process = QProcess(self)
         self.info_process.finished.connect(self._on_info_finished)
         self.info_process.errorOccurred.connect(self._on_info_error)
+
+        self.runner = Runner(self)
+        self.runner.output.connect(self._append)
+        self.runner.started.connect(self._on_runner_started)
+        self.runner.finished.connect(self._on_runner_finished)
+        self.runner.allFinished.connect(self._on_runner_all_finished)
 
         self.port_timer = QTimer(self)
         self.port_timer.setSingleShot(True)
@@ -369,8 +388,14 @@ class FlashWindow(QMainWindow):
         root.setSpacing(12)
 
         root.addLayout(self._header())
-        root.addWidget(self._firmware_card())
-        root.addLayout(self._actions())
+        self.firmware_card = self._firmware_card()
+        root.addWidget(self.firmware_card)
+        self.production_card = self._production_card()
+        self.production_card.hide()
+        root.addWidget(self.production_card)
+        self.actions_widget = QWidget()
+        self.actions_widget.setLayout(self._actions())
+        root.addWidget(self.actions_widget)
         root.addWidget(self._output_card(), 1)
 
         self.progress = QProgressBar()
@@ -427,7 +452,9 @@ class FlashWindow(QMainWindow):
         self.mode_group.setExclusive(True)
         self.mode_boot = QPushButton("Bootloader")
         self.mode_app = QPushButton("Application")
-        for index, button in enumerate((self.mode_boot, self.mode_app)):
+        self.mode_prod = QPushButton("Production")
+        for index, button in enumerate((self.mode_boot, self.mode_app,
+                                        self.mode_prod)):
             button.setObjectName("NavItem")
             button.setCheckable(True)
             button.setCursor(Qt.PointingHandCursor)
@@ -436,7 +463,7 @@ class FlashWindow(QMainWindow):
             column.addWidget(button)
         self.mode_boot.setChecked(True)
         self.mode_group.idClicked.connect(
-            lambda index: self._set_mode("boot" if index == 0 else "app"))
+            lambda index: self._set_mode(("boot", "app", "prod")[index]))
 
         column.addStretch(1)
         version = QLabel("Version 0.1")
@@ -632,6 +659,139 @@ class FlashWindow(QMainWindow):
         add_shadow(card)
         return card
 
+    def _production_card(self) -> QFrame:
+        """P1-1 (GUI): ordered production workflow with per-step status."""
+        card = QFrame()
+        card.setObjectName("Card")
+        box = QVBoxLayout(card)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(0)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(16, 12, 16, 4)
+        title = QLabel("Production workflow")
+        title.setObjectName("SectionTitle")
+        self.production_hint = QLabel(
+            "Build, provision, flash A+B and verify in one guided run")
+        self.production_hint.setObjectName("Hint")
+        header.addWidget(title)
+        header.addStretch(1)
+        header.addWidget(self.production_hint)
+        box.addLayout(header)
+
+        self.app_repo_edit = QLineEdit()
+        self.app_repo_edit.setPlaceholderText(
+            "Application repository (C, Rust or Zephyr)")
+        self.app_repo_button = QPushButton("Choose…")
+        self.app_repo_button.clicked.connect(self._browse_app_repo)
+        box.addWidget(self._card_row(
+            [self._row_label("Application repo"), self.app_repo_edit,
+             self.app_repo_button], stretch_index=1))
+
+        self.app_build_edit = QLineEdit("make")
+        self.app_build_edit.setPlaceholderText(
+            "build command, run in the application repository")
+        box.addWidget(self._card_row(
+            [self._row_label("Application build"), self.app_build_edit],
+            stretch_index=1))
+
+        self.app_bin_edit = QLineEdit("build/app.bin")
+        self.app_bin_edit.setPlaceholderText(
+            "application .bin to wrap with mkimage.py (empty = skip)")
+        box.addWidget(self._card_row(
+            [self._row_label("Application binary"), self.app_bin_edit],
+            stretch_index=1))
+
+        self.app_version_edit = QLineEdit("1.0.0")
+        box.addWidget(self._card_row(
+            [self._row_label("Application version"), self.app_version_edit],
+            stretch_index=1))
+
+        self.app_a_edit = QLineEdit(str(DEFAULT_APP_IMG))
+        self.app_a_button = QPushButton("Choose…")
+        self.app_a_button.clicked.connect(lambda: self._browse_prod_image("a"))
+        box.addWidget(self._card_row(
+            [self._row_label("Slot A image"), self.app_a_edit,
+             self.app_a_button], stretch_index=1))
+
+        self.app_b_edit = QLineEdit(str(DEFAULT_APP_IMG))
+        self.app_b_button = QPushButton("Choose…")
+        self.app_b_button.clicked.connect(lambda: self._browse_prod_image("b"))
+        box.addWidget(self._card_row(
+            [self._row_label("Slot B image"), self.app_b_edit,
+             self.app_b_button], stretch_index=1))
+
+        self.boot_build_edit = QLineEdit("make build")
+        box.addWidget(self._card_row(
+            [self._row_label("BOOT build"), self.boot_build_edit],
+            stretch_index=1))
+
+        self.provision_edit = QLineEdit("tools/provision.sh")
+        box.addWidget(self._card_row(
+            [self._row_label("Provision command"), self.provision_edit],
+            stretch_index=1))
+
+        self.prod_port_edit = QLineEdit()
+        self.prod_port_edit.setPlaceholderText(
+            "ST-LINK VCP for steps 5 and 6 (e.g. /dev/ttyACM0)")
+        box.addWidget(self._card_row(
+            [self._row_label("Serial port"), self.prod_port_edit],
+            stretch_index=1))
+
+        self.factory_switch = Switch()
+        self.factory_switch.setToolTip(
+            "The selected BOOT file is a mkimage --factory-hex image; "
+            "one SWD program already writes BOOT, slots A+B and metadata")
+        box.addWidget(self._card_row(
+            [self._row_label("Factory HEX"),
+             QLabel("single SWD program, skip serial A+B"), None,
+             self.factory_switch], stretch_index=1))
+        self.factory_note = QLabel(
+            "generate with: tools/mkimage.py --factory-hex ...")
+        self.factory_note.setObjectName("Hint")
+        box.addWidget(self._card_row(
+            [self._row_label(""), self.factory_note, None],
+            stretch_index=1))
+
+        steps = [
+            ("build_boot", "1. Build BOOT"),
+            ("build_app", "2. Build application"),
+            ("provision", "3. Provision option bytes"),
+            ("flash_boot", "4. Flash BOOT over SWD"),
+            ("flash_ab", "5. Flash application to A and B"),
+            ("verify", "6. Verify both slots"),
+        ]
+        for key, label_text in steps:
+            status = QLabel("pending")
+            status.setObjectName("Hint")
+            self.production_steps[key] = status
+            box.addWidget(self._card_row(
+                [self._row_label(label_text), status, None],
+                stretch_index=1))
+
+        buttons = QHBoxLayout()
+        buttons.setContentsMargins(16, 8, 16, 12)
+        buttons.setSpacing(8)
+        self.run_all_button = QPushButton("Run all steps")
+        self.run_all_button.setObjectName("Primary")
+        self.run_all_button.clicked.connect(self._run_all_production)
+        buttons.addWidget(self.run_all_button)
+        for key, label_text in (("build_boot", "Build BOOT"),
+                                ("build_app", "Build app"),
+                                ("provision", "Provision"),
+                                ("flash_boot", "Flash BOOT"),
+                                ("flash_ab", "Flash A+B"),
+                                ("verify", "Verify")):
+            button = QPushButton(label_text)
+            button.clicked.connect(
+                lambda _checked=False, step=key:
+                self._run_production_step(step))
+            buttons.addWidget(button)
+        box.addLayout(buttons)
+
+        add_shadow(card)
+        return card
+
     def _actions(self) -> QVBoxLayout:
         column = QVBoxLayout()
         column.setSpacing(8)
@@ -661,8 +821,15 @@ class FlashWindow(QMainWindow):
         self.probe_button.setToolTip("Detect the ST-LINK and the target chip")
         self.probe_button.clicked.connect(self._probe)
 
+        self.enter_button = QPushButton("Enter BOOT")
+        self.enter_button.setMinimumHeight(52)
+        self.enter_button.setToolTip(
+            "Ask the running application to reset into the bootloader")
+        self.enter_button.clicked.connect(self._enter_boot)
+
         for button in (self.flash_button, self.erase_button,
-                       self.reset_button, self.probe_button):
+                       self.reset_button, self.probe_button,
+                       self.enter_button):
             row.addWidget(button, 1)
         column.addLayout(row)
         return column
@@ -721,29 +888,41 @@ class FlashWindow(QMainWindow):
 
     def _set_mode(self, mode: str, initial: bool = False) -> None:
         if not initial:
-            self.firmware_text[self.mode] = self.file_edit.text()
+            if self.mode in self.firmware_text:
+                self.firmware_text[self.mode] = self.file_edit.text()
             if mode == self.mode:
                 return
         self.mode = mode
         boot = mode == "boot"
+        app = mode == "app"
+        prod = mode == "prod"
 
         self.mode_boot.setChecked(boot)
-        self.mode_app.setChecked(not boot)
-        self.page_title.setText("Bootloader" if boot else "Application")
+        self.mode_app.setChecked(app)
+        self.mode_prod.setChecked(prod)
+        self.page_title.setText(
+            "Bootloader" if boot else "Application" if app else "Production")
         self.page_subtitle.setText(
             "Program BOOT over SWD with OpenOCD" if boot else
-            "Update an application image over HWLINK")
+            "Update an application image over HWLINK" if app else
+            "Guided build, provision, A+B flash and verification workflow")
         self.erase_button.setVisible(boot)
+        self.enter_button.setVisible(app)
+
+        self.firmware_card.setVisible(not prod)
+        self.production_card.setVisible(prod)
+        self.actions_widget.setVisible(not prod)
 
         self.address_row.setVisible(boot)
         self.container_row.setVisible(boot)
-        self.serial_row.setVisible(not boot)
-        self.target_row.setVisible(not boot)
-        self.activate_row.setVisible(not boot)
-        self.verbose_row.setVisible(not boot)
+        self.serial_row.setVisible(app)
+        self.target_row.setVisible(app)
+        self.activate_row.setVisible(app)
+        self.verbose_row.setVisible(app)
         self.addr_edit.setVisible(boot)
 
-        self._set_firmware_text(self.firmware_text[mode])
+        if not prod:
+            self._set_firmware_text(self.firmware_text[mode])
         self.file_edit.setPlaceholderText(
             "Drag a .elf, .hex or .bin here, or choose a file" if boot else
             "Drag a .img here, or choose a file (tools/mkimage.py)")
@@ -755,18 +934,24 @@ class FlashWindow(QMainWindow):
         self._refresh_hint()
         self._apply_mode_state()
 
-        if not boot:
+        if app:
             self._populate_ports()
             self._refresh_boot_info()
 
+    def _busy(self) -> bool:
+        return (self.process.state() != QProcess.NotRunning or
+                self.runner.busy())
+
     def _apply_mode_state(self) -> None:
         """Enable/disable widgets for the current mode (not while busy)."""
-        busy = self.process.state() != QProcess.NotRunning
+        busy = self._busy()
         boot = self.mode == "boot"
+        app = self.mode == "app"
+        prod = self.mode == "prod"
         self.erase_button.setEnabled(boot and not busy)
         for widget in (self.flash_button, self.reset_button,
-                       self.probe_button):
-            widget.setEnabled(not busy)
+                       self.probe_button, self.enter_button):
+            widget.setEnabled(not busy and not prod)
         self.file_edit.setEnabled(not busy)
         self.choose_button.setEnabled(not busy)
         self.addr_edit.setEnabled(not busy)
@@ -776,9 +961,15 @@ class FlashWindow(QMainWindow):
         self.baud_combo.setEnabled(not busy)
         self.activate_switch.setEnabled(not busy)
         self.verbose_switch.setEnabled(not busy)
-        if not boot:
-            self.slot_a.setEnabled(not busy and self.active_slot != "A")
-            self.slot_b.setEnabled(not busy and self.active_slot != "B")
+        for widget in (self.app_repo_edit, self.app_repo_button,
+                       self.app_build_edit, self.app_a_edit,
+                       self.app_a_button, self.app_b_edit,
+                       self.app_b_button, self.boot_build_edit,
+                       self.provision_edit, self.run_all_button):
+            widget.setEnabled(not busy)
+        if app:
+            self.slot_a.setEnabled(False)
+            self.slot_b.setEnabled(False)
         else:
             self.slot_a.setEnabled(not busy)
             self.slot_b.setEnabled(not busy)
@@ -817,9 +1008,30 @@ class FlashWindow(QMainWindow):
             self.settings.value("verbose", True, type=bool))
         baud = self.settings.value("baud", "115200", type=str)
         self.baud_combo.setCurrentText(baud)
+        self.app_repo_edit.setText(
+            self.settings.value("app_repo", "", type=str))
+        self.app_build_edit.setText(
+            self.settings.value("app_build", "make", type=str))
+        self.app_bin_edit.setText(
+            self.settings.value("app_bin", "build/app.bin", type=str))
+        self.app_version_edit.setText(
+            self.settings.value("app_version", "1.0.0", type=str))
+        self.app_a_edit.setText(
+            self.settings.value("prod_a", str(DEFAULT_APP_IMG), type=str))
+        self.app_b_edit.setText(
+            self.settings.value("prod_b", str(DEFAULT_APP_IMG), type=str))
+        self.boot_build_edit.setText(
+            self.settings.value("boot_build", "make build", type=str))
+        self.provision_edit.setText(
+            self.settings.value("provision", "tools/provision.sh", type=str))
+        self.prod_port_edit.setText(
+            self.settings.value("port", "", type=str))
+        self.factory_switch.setChecked(
+            self.settings.value("factory_hex", False, type=bool))
 
     def _save_settings(self) -> None:
-        self.firmware_text[self.mode] = self.file_edit.text().strip()
+        if self.mode in self.firmware_text:
+            self.firmware_text[self.mode] = self.file_edit.text().strip()
         self.settings.setValue("firmware", self.firmware_text["boot"])
         self.settings.setValue("app_firmware", self.firmware_text["app"])
         self.settings.setValue("docker", self.container_switch.isChecked())
@@ -828,6 +1040,17 @@ class FlashWindow(QMainWindow):
         self.settings.setValue("verbose", self.verbose_switch.isChecked())
         self.settings.setValue("baud", self.baud_combo.currentText())
         self.settings.setValue("port", self.port_combo.currentText())
+        self.settings.setValue("app_repo", self.app_repo_edit.text().strip())
+        self.settings.setValue("app_build", self.app_build_edit.text())
+        self.settings.setValue("app_bin", self.app_bin_edit.text())
+        self.settings.setValue("app_version", self.app_version_edit.text())
+        self.settings.setValue("prod_a", self.app_a_edit.text())
+        self.settings.setValue("prod_b", self.app_b_edit.text())
+        self.settings.setValue("boot_build", self.boot_build_edit.text())
+        self.settings.setValue("provision", self.provision_edit.text())
+        self.settings.setValue("port", self.prod_port_edit.text().strip() or
+                               self.port_combo.currentText())
+        self.settings.setValue("factory_hex", self.factory_switch.isChecked())
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt API)
         self._save_settings()
@@ -851,11 +1074,19 @@ class FlashWindow(QMainWindow):
         if busy:
             for widget in (self.flash_button, self.erase_button,
                            self.reset_button, self.probe_button,
+                           self.enter_button,
                            self.file_edit, self.choose_button,
                            self.addr_edit, self.container_switch,
                            self.port_combo, self.refresh_ports_button,
                            self.baud_combo, self.slot_a, self.slot_b,
-                           self.activate_switch):
+                           self.activate_switch, self.app_repo_edit,
+                           self.app_repo_button, self.app_build_edit,
+                           self.app_bin_edit, self.app_version_edit,
+                           self.app_a_edit, self.app_a_button,
+                           self.app_b_edit, self.app_b_button,
+                           self.boot_build_edit, self.provision_edit,
+                           self.run_all_button, self.prod_port_edit,
+                           self.factory_switch):
                 widget.setEnabled(False)
             self._set_state("busy", "Working…")
         else:
@@ -910,7 +1141,7 @@ class FlashWindow(QMainWindow):
 
     def _populate_ports(self) -> None:
         current = self.port_combo.currentText().strip()
-        ports = sorted(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*"))
+        ports = stlink_ports()
         self.port_combo.blockSignals(True)
         self.port_combo.clear()
         self.port_combo.addItems(ports)
@@ -975,27 +1206,33 @@ class FlashWindow(QMainWindow):
             return
         if data is None:
             self.active_slot = None
+            self.target_slot = None
             self.flash_mode = None
-            self.slot_a.setEnabled(True)
-            self.slot_b.setEnabled(True)
+            self.boot_version = None
+            self.slot_a.setEnabled(False)
+            self.slot_b.setEnabled(False)
             self.slot_a.setChecked(True)
             self.slot_hint.setStyleSheet("")
             self.slot_hint.setText(
-                "Boot info unavailable · BOOT writes the inactive slot")
+                "Boot info unavailable · BOOT chooses the target slot")
             if error:
                 self.status.setText("Boot info unavailable")
                 self._append(error if error.startswith("bootctl:")
                              else f"bootctl: {error}")
             return
 
-        active = str(data.get("active_slot", "?")).upper()
-        self.active_slot = active if active in ("A", "B") else None
-        self.flash_mode = str(data.get("flash_mode", ""))
-        target = "B" if self.active_slot == "A" else "A"
+        view = parse_boot_info(data)
+        self.active_slot = view.active_slot if view else None
+        self.target_slot = view.target_slot if view else None
+        self.flash_mode = view.flash_mode if view else ""
+        self.boot_version = view.boot_version if view else ""
 
-        self.slot_a.setEnabled(self.active_slot != "A")
-        self.slot_b.setEnabled(self.active_slot != "B")
-        (self.slot_b if target == "B" else self.slot_a).setChecked(True)
+        # P1-3: the target is read-only and comes from BOOT, not from a
+        # guess based on the active slot.
+        self.slot_a.setEnabled(False)
+        self.slot_b.setEnabled(False)
+        (self.slot_b if self.target_slot == "B" else
+         self.slot_a).setChecked(True)
         self._on_slot_changed()
 
         if self.flash_mode and self.flash_mode != "DUAL_BANK":
@@ -1003,25 +1240,29 @@ class FlashWindow(QMainWindow):
             self.slot_hint.setText(
                 "Single-bank flash · run tools/provision.sh for A/B")
         self.status.setText("Ready")
-        self._append(f"boot info: active {self.active_slot or 'none'}, "
-                     f"flash mode {self.flash_mode or 'unknown'}")
+        self._append(
+            f"boot info: active {self.active_slot or 'none'}, "
+            f"target {self.target_slot or '?'}, "
+            f"flash mode {self.flash_mode or 'unknown'}"
+            + (f", BOOT {self.boot_version}" if self.boot_version else ""))
 
     def _on_slot_changed(self) -> None:
         if self.mode != "app":
             return
-        target = "A" if self.slot_a.isChecked() else "B"
+        target = self.target_slot or "?"
         if self.flash_mode and self.flash_mode != "DUAL_BANK":
             self.slot_hint.setStyleSheet(f"color: {WARN_COLOR};")
             self.slot_hint.setText(
                 "Single-bank flash · run tools/provision.sh for A/B")
-        elif self.active_slot is None:
+        elif self.target_slot is None:
             self.slot_hint.setStyleSheet("")
             self.slot_hint.setText(
-                "Boot info unavailable · BOOT writes the inactive slot")
+                "Boot info unavailable · BOOT chooses the target slot")
         else:
             self.slot_hint.setStyleSheet("")
             self.slot_hint.setText(
-                f"Active: {self.active_slot} · writing {target} (inactive)")
+                f"Active: {self.active_slot or 'none'} · BOOT targets "
+                f"{target} (read-only)")
 
     # ---- process helpers ------------------------------------------------
 
@@ -1029,6 +1270,31 @@ class FlashWindow(QMainWindow):
         text = ANSI_RE.sub("", text).rstrip("\r\n")
         if not text:
             return
+        if text.startswith("{"):
+            try:
+                event = json.loads(text)
+            except json.JSONDecodeError:
+                event = None
+            if isinstance(event, dict):
+                if event.get("event") == "progress":
+                    self.progress.setRange(0, 100)
+                    percent = event.get("percent")
+                    if isinstance(percent, (int, float)):
+                        self.progress.setValue(max(0, min(100,
+                                                         int(percent))))
+                    operation = event.get("operation", "update")
+                    self.status.setText(f"{operation} "
+                                        f"{event.get('done', 0)}/"
+                                        f"{event.get('total', 0)}")
+                elif event.get("event") == "error":
+                    self._set_state("error", "Failed")
+                    self.status.setText(str(event.get("error", "error")))
+                elif event.get("event") in ("stage", "result", "confirm"):
+                    self.status.setText(str(event.get("status",
+                                                     event.get("state",
+                                                             "working"))))
+                self.log.appendPlainText(text)
+                return
         if self.progress.maximum() == 100:
             match = PERCENT_RE.search(text)
             if match:
@@ -1039,12 +1305,19 @@ class FlashWindow(QMainWindow):
     def _drain(self) -> None:
         # MergedChannels forwards stdout and stderr to the stdout channel.
         buf = self.process.readAllStandardOutput()
-        self._append(bytes(buf).decode("utf-8", "replace"))
+        for line in bytes(buf).decode("utf-8", "replace").splitlines():
+            self._append(line)
 
     def _start(self, program: str, args: list[str], text: str,
-               display: str | None = None) -> None:
-        if self.process.state() != QProcess.NotRunning:
+               display: str | None = None, step: str | None = None,
+               cwd: Path | None = None) -> None:
+        if self._busy():
             return
+        self.current_step = step
+        if cwd is not None:
+            self.process.setWorkingDirectory(str(cwd))
+        else:
+            self.process.setWorkingDirectory(str(ROOT))
         self.log.appendPlainText(
             "$ " + (display or " ".join([program, *args])))
         self.progress.setRange(0, 0)
@@ -1052,14 +1325,15 @@ class FlashWindow(QMainWindow):
         self.process.start(program, args)
 
     def _project_path(self, path: Path) -> str:
-        """Return the host path, which docker-dev.sh maps into /work itself."""
+        """Return the host path; docker-dev.sh also mounts the workspace."""
         path = path.resolve()
+        workspace = ROOT.parent
         try:
-            path.relative_to(ROOT)
+            path.relative_to(workspace)
         except ValueError as exc:
             raise RuntimeError(
-                f"{path} is outside {ROOT}; the container only sees /work"
-            ) from exc
+                f"{path} is outside the workspace ({workspace}); the "
+                "container cannot see it") from exc
         return str(path)
 
     def _openocd_cfg(self) -> str:
@@ -1068,7 +1342,8 @@ class FlashWindow(QMainWindow):
     def _dev(self, *args: str) -> None:
         self._start("bash", [str(DEV_SCRIPT), *args], "Running…")
 
-    def _bootctl(self, *args: str, text: str, verbose: bool = False) -> None:
+    def _bootctl(self, *args: str, text: str, verbose: bool = False,
+                 step: str | None = None) -> None:
         port = self.port_combo.currentText().strip()
         baud = self.baud_combo.currentText().strip() or "115200"
         command = ["--port", port, "--baud", baud]
@@ -1076,7 +1351,183 @@ class FlashWindow(QMainWindow):
             command.append("--verbose")
         command.extend(args)
         self._start(sys.executable, [str(BOOTCTL), *command], text,
-                    display="bootctl.py " + " ".join(command))
+                    display="bootctl.py " + " ".join(command), step=step)
+
+    # ---- production workflow -------------------------------------------
+
+    def _browse_app_repo(self) -> None:
+        name = QFileDialog.getExistingDirectory(
+            self, "Choose the application repository", str(ROOT.parent))
+        if name:
+            self.app_repo_edit.setText(name)
+
+    def _browse_prod_image(self, slot: str) -> None:
+        name, _ = QFileDialog.getOpenFileName(
+            self, f"Choose the slot {slot.upper()} image",
+            str(DEFAULT_APP_IMG.parent),
+            "Application image (*.img);;All files (*)")
+        if name:
+            (self.app_a_edit if slot == "a" else self.app_b_edit).setText(name)
+
+    def _set_step(self, step: str, state: str, text: str) -> None:
+        label = self.production_steps.get(step)
+        if label is None:
+            return
+        colors = {"pending": "#86868b", "running": "#0071e3",
+                  "ok": "#248a3d", "error": "#d70015"}
+        label.setStyleSheet(f"color: {colors.get(state, '#86868b')};")
+        label.setText(text)
+
+    def _production_job(self, step: str) -> dict | None:
+        app_repo = Path(self.app_repo_edit.text().strip()).expanduser()
+        if self.app_repo_edit.text().strip() and not app_repo.is_dir():
+            raise RuntimeError(f"application repository not found: {app_repo}")
+        boot_path = None
+        if step in ("provision", "flash_boot"):
+            boot_path = self._firmware()
+            if boot_path is None:
+                raise RuntimeError("choose a BOOT firmware file first")
+        port = self.prod_port_edit.text().strip() or \
+            self.port_combo.currentText().strip()
+        baud = self.baud_combo.currentText().strip() or "115200"
+
+        if step == "build_boot":
+            command = self.boot_build_edit.text().strip() or "make build"
+            if not self.container_switch.isChecked() and \
+                    command == "make build":
+                command = ("cmake -S . -B build -G Ninja "
+                           "-DCMAKE_BUILD_TYPE=Release "
+                           "&& cmake --build build")
+            return {"program": "bash", "args": ["-lc", command],
+                    "cwd": ROOT, "text": "Building BOOT…"}
+        def app_path(text: str) -> Path:
+            path = Path(text).expanduser()
+            if path.is_absolute():
+                return path
+            base = app_repo if self.app_repo_edit.text().strip() else ROOT
+            return base / path
+
+        if step == "build_app":
+            command = self.app_build_edit.text().strip()
+            if not command or not self.app_repo_edit.text().strip():
+                return None
+            binary = self.app_bin_edit.text().strip()
+            if binary:
+                image_a = app_path(self.app_a_edit.text())
+                image_b = app_path(self.app_b_edit.text())
+                binary_path = app_path(binary)
+                version = self.app_version_edit.text().strip() or "1.0.0"
+                mkimage = (f"{sys.executable} {ROOT / 'tools' / 'mkimage.py'} "
+                           f"--input '{binary_path}' --version '{version}' "
+                           f"--timestamp $(date +%s) --name app")
+                command = (f"{command} && {mkimage} --output '{image_a}'"
+                           f" && {mkimage} --output '{image_b}'")
+            return {"program": "bash", "args": ["-lc", command],
+                    "cwd": app_repo, "text": "Building application…"}
+        if step == "provision":
+            command = self.provision_edit.text().strip() or \
+                "tools/provision.sh"
+            return {"program": "bash",
+                    "args": ["-lc", f"{command} '{boot_path}'".strip()],
+                    "cwd": ROOT, "text": "Provisioning option bytes…"}
+        if step == "flash_boot":
+            if self.container_switch.isChecked():
+                return {"program": "bash",
+                        "args": [str(DEV_SCRIPT), "flash",
+                                 str(boot_path)],
+                        "cwd": ROOT, "text": "Flashing BOOT…"}
+            args = ["-f", self._openocd_cfg(), "-c"]
+            target = f'"{boot_path}"'
+            if boot_path.suffix.lower() == ".bin":
+                target += f" {self.addr_edit.text().strip() or DEFAULT_ADDR}"
+            return {"program": "openocd",
+                    "args": args + [f"program {target} verify reset exit"],
+                    "cwd": ROOT, "text": "Flashing BOOT…"}
+        if step == "flash_ab":
+            if not port:
+                raise RuntimeError("choose the ST-LINK serial port first")
+            image_a = app_path(self.app_a_edit.text()) \
+                if self.app_a_edit.text().strip() else None
+            image_b = app_path(self.app_b_edit.text()) \
+                if self.app_b_edit.text().strip() else None
+            if image_a is None or not image_a.is_file() or \
+                    image_b is None or not image_b.is_file():
+                raise RuntimeError("choose the slot A and slot B images first")
+            command = [str(BOOTCTL), "--port", port, "--baud", baud,
+                       "update", "--both", "--a", str(image_a),
+                       "--b", str(image_b), "--json"]
+            return {"program": sys.executable, "args": command,
+                    "cwd": ROOT, "text": "Updating slots A and B…"}
+        if step == "verify":
+            if not port:
+                raise RuntimeError("choose the ST-LINK serial port first")
+            command = [str(BOOTCTL), "--port", port, "--baud", baud,
+                       "info", "--json"]
+            return {"program": sys.executable, "args": command,
+                    "cwd": ROOT, "text": "Verifying both slots…"}
+        return None
+
+    def _enqueue_production(self, steps: list[str]) -> None:
+        if self._busy():
+            return
+        jobs: list[Job] = []
+        for step in steps:
+            try:
+                job = self._production_job(step)
+            except RuntimeError as error:
+                QMessageBox.critical(self, "BOOT Flasher", str(error))
+                self._set_step(step, "error", str(error))
+                return
+            if job is None:
+                self._set_step(step, "pending", "skipped")
+                continue
+            jobs.append(Job(
+                step=step,
+                program=job["program"],
+                args=job["args"],
+                cwd=job.get("cwd"),
+                text=job["text"],
+                display=" ".join([job["program"], *job["args"]])))
+        if jobs:
+            self.runner.start(jobs)
+
+    def _run_all_production(self) -> None:
+        steps = ["build_boot", "build_app", "provision", "flash_boot"]
+        if not self.factory_switch.isChecked():
+            steps.append("flash_ab")
+        steps.append("verify")
+        self._enqueue_production(steps)
+
+    def _run_production_step(self, step: str) -> None:
+        self._enqueue_production([step])
+
+    def _on_runner_started(self, step: str, text: str) -> None:
+        self._set_step(step, "running", "running…")
+        self.progress.setRange(0, 0)
+        self._set_busy(True, text)
+        self._set_state("busy", "Working…")
+
+    def _on_runner_finished(self, step: str, success: bool, code: int) -> None:
+        if success:
+            self._set_step(step, "ok", "done")
+        else:
+            self._set_step(step, "error", f"failed ({code})")
+
+    def _on_runner_all_finished(self, failed: bool) -> None:
+        if failed:
+            self._set_busy(False, "Failed")
+            self._set_state("error", "Failed")
+        else:
+            self._set_busy(False, "Done")
+            self._set_state("ok", "Done")
+
+    def _enter_boot(self) -> None:
+        port = self.port_combo.currentText().strip()
+        if not port:
+            QMessageBox.warning(self, "BOOT Flasher",
+                                "Choose the ST-LINK serial port first.")
+            return
+        self._bootctl("enter", text="Entering BOOT…")
 
     # ---- actions --------------------------------------------------------
 
@@ -1154,14 +1605,8 @@ class FlashWindow(QMainWindow):
             QMessageBox.warning(self, "BOOT Flasher",
                                 "Choose the ST-LINK serial port first.")
             return
-        target = "A" if self.slot_a.isChecked() else "B"
+        target = self.target_slot or "?"
 
-        if self.active_slot is not None and target == self.active_slot:
-            QMessageBox.warning(
-                self, "BOOT Flasher",
-                f"Slot {target} is the active slot. BOOT only writes the "
-                "inactive slot (UPD-001); choose the other one.")
-            return
         if self.flash_mode and self.flash_mode != "DUAL_BANK":
             answer = QMessageBox.warning(
                 self, "Single-bank flash",
@@ -1171,11 +1616,10 @@ class FlashWindow(QMainWindow):
             if answer != QMessageBox.Ok:
                 return
 
-        args = ["update", str(firmware.resolve())]
+        args = ["update", str(firmware.resolve()), "--json"]
         if self.activate_switch.isChecked():
-            args.append("--activate")
-        self._bootctl(*args, text=f"Updating slot {target}…",
-                      verbose=self.verbose_switch.isChecked())
+            args.extend(["--activate", "--wait"])
+        self._bootctl(*args, text=f"Updating slot {target}…")
         if self.process.state() != QProcess.NotRunning:
             self.progress.setRange(0, 100)
             self.progress.setValue(0)
@@ -1192,7 +1636,7 @@ class FlashWindow(QMainWindow):
             self._dev("erase")
         else:
             self._start("openocd", ["-f", self._openocd_cfg(), "-c",
-                                    "init; reset halt; flash erase_sector 0 0 last; exit"],
+                                    "init; reset halt; stm32f2x mass_erase 0; exit"],
                         "Erasing…")
 
     def _reset(self) -> None:
@@ -1222,6 +1666,7 @@ class FlashWindow(QMainWindow):
             self._start("st-info", ["--probe"], "Probing…")
 
     def _cancel(self) -> None:
+        self.runner.cancel()
         if self.process.state() != QProcess.NotRunning:
             self.status.setText("Cancelling…")
             self.process.kill()

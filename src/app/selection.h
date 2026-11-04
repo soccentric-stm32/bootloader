@@ -59,11 +59,13 @@ typedef struct {
     bool rejected;
     bool sequence_valid;
     bool vectors_ok;
+    bool crc_checked;
     bool crc_ok;
     bool valid;
     uint32_t sequence;
     uint32_t rejected_reason;
     uint32_t verified_crc;
+    uint8_t trial_count;
     boot_image_header_t header;
 } boot_slot_info_t;
 
@@ -73,13 +75,30 @@ typedef struct {
     bool active_valid;
     bool active_pending;
     uint8_t trial_count;
+    /* P0-2: a REJECTED record that could not be programmed is rejected in
+     * RAM for this boot.  The mask survives rescanning, so GetBootInfo
+     * cannot make the exhausted slot bootable (or the update target)
+     * again. */
+    uint8_t ram_rejected_mask;
 } boot_selection_t;
 
 /* Enable backup-domain access (PWR clock + DBP).  Call once at start-up. */
 void boot_selection_init(void);
 
-/* Read both metadata sectors and CRC-check the slots (SEL-001). */
+/* P2-7: the boot path scans quickly: metadata and vectors for both slots,
+ * then the image CRC only of the best candidate and, if it fails, of the
+ * fallback.  Full scanning (both CRCs) is used by GetBootInfo. */
 void boot_selection_scan(boot_selection_t *selection);
+void boot_selection_scan_full(boot_selection_t *selection);
+
+/* Refresh slot details without changing the active/target selection.
+ * Used by GetBootInfo while an update session may be open (P0-2/P2-7). */
+void boot_selection_refresh_slots(boot_selection_t *selection);
+
+/* P0-2: reject a slot in RAM for the rest of this boot and re-apply the
+ * decision on every later scan. */
+void boot_selection_mark_rejected(boot_selection_t *selection,
+                                  boot_slot_t slot, uint32_t reason);
 
 /* Highest sequence number among valid slots (SEL-002). */
 void boot_selection_choose(boot_selection_t *selection);

@@ -319,7 +319,7 @@ address and size in their linker scripts.
 | TRY-002 | Each time BOOT starts a pending slot it shall increment the trial counter in `RTC_BKP0R` before the hand-over. | T |
 | TRY-003 | The trial limit shall be 3 boots (build-time constant). When BOOT finds a pending slot whose trial counter has reached the limit, it shall write a `REJECTED` record for that slot and select again (SEL-002), which boots the other slot. | T |
 | TRY-004 | BOOT shall start the independent watchdog (IWDG) before handing over to any application, with a timeout of 4 s (build-time constant), so that a hung application resets and counts as a failed trial. | T |
-| TRY-005 | When the trial counter magic is missing (power-on, or backup domain reset), BOOT shall treat the count as 0. A power cycle therefore restarts the trial count; this is accepted (Appendix C, OPEN-B03). | A |
+| TRY-005 | The trial counter shall be the number of contiguous `TRIAL` records in the pending slot's metadata sector, so it survives a power loss. The RTC backup register is a same-session fallback when the metadata write fails (Appendix C, OPEN-B03). | T |
 | TRY-006 | When the application writes `CONFIRMED`, the trial counter shall be cleared by the next boot. | T |
 | TRY-007 | A rejected slot shall stay rejected until it is overwritten by a new update. | T |
 | TRY-008 | When rollback happened, BOOT shall report it in `GetBootInfo` (last boot outcome `ROLLED_BACK`, rejected slot, reason `TRIAL_LIMIT`) until the next successful update. | T |
@@ -496,6 +496,7 @@ flash word is ever programmed twice.
 | `0x120` | `ACTIVATED` | magic `0x41435456`, sequence number, CRC of record | BOOT at `Activate` |
 | `0x140` | `CONFIRMED` | magic `0x434F4E46`, CRC of record | The application (APP-005) |
 | `0x160` | `REJECTED` | magic `0x52454A45`, reason code, CRC of record | BOOT (TRY-003) |
+| `0x180`..`0x27F` | `TRIAL` | magic `0x5452494C`, attempt number 1..8, CRC of record | BOOT before every pending hand-over (P2-6) |
 
 A record is present only when its magic and CRC are correct; an erased
 (`0xFF…`) area means "not present". A torn record (power lost while
@@ -519,7 +520,7 @@ CRC32 is the last word of those 256 bytes (`header_crc32`).
 |---|---|---|
 | OPEN-B01 | Confirm against [RM0410] that `SYSCFG_MEMRMP.SWP_FB` also swaps the ITCM flash alias (`0x0020 0000`), and how sector numbers in `FLASH_CR.SNB` map to physical banks while swapped. SWP-002/SWP-003 assume the AXIM alias is used and BOOT runs unswapped. | Open |
 | OPEN-B02 | Measure the 128 KB sector erase time on this board (datasheet max ≈ 2 s at ×32 parallelism) and set the host `UpdateData` timeout ([GUI] FW-005) from it. | Open bench item |
-| OPEN-B03 | Trial counter in a backup register restarts on power loss (no VBAT battery). Accept, or move the counter into append-only metadata records. | Accepted for v0.1 |
+| OPEN-B03 | Trial counter in a backup register restarts on power loss (no VBAT battery). Accept, or move the counter into append-only metadata records. | Closed: BOOT appends one `TRIAL` record per pending attempt (P2-6); the RTC register remains a hand-over hint. |
 | OPEN-B04 | Self-update of BOOT (using the reserved bank 2 sectors 0–1 and `nDBOOT`) is out of scope; BOOT is updated over SWD. | Deferred |
 | OPEN-B05 | Confirm that OpenOCD's `stm32f2x options_write` can set `nDBANK`/`nDBOOT` on the F767; otherwise provisioning uses STM32CubeProgrammer CLI. Changing `nDBANK` requires a full erase. | Open |
 | OPEN-B06 | Earlier design notes named the F4 `BFB2` bit; the F76x mechanism is `SWP_FB` (runtime, volatile) plus `nDBOOT`/`BOOT_ADDx` (option bytes). This SRS uses `SWP_FB` only, so no option byte is written to switch slots. | Closed in this draft |

@@ -19,6 +19,9 @@
 #include "metadata.h"
 #include "selection.h"
 
+_Static_assert(BOOT_TRIAL_LIMIT <= BOOT_META_TRIAL_RECORDS,
+               "trial limit exceeds the TRIAL record area");
+
 static volatile uint32_t *bkp(uint32_t index)
 {
     return &((volatile uint32_t *)&RTC->BKP0R)[index];
@@ -31,10 +34,28 @@ void boot_selection_init(void)
     __HAL_RCC_RTC_CLK_ENABLE();
 }
 
-void boot_selection_scan(boot_selection_t *selection)
+static bool metadata_ok(const boot_slot_info_t *info)
 {
-    memset(selection, 0, sizeof(*selection));
+    return info->header_valid && info->activated && info->sequence_valid &&
+           !info->rejected;
+}
 
+static void apply_ram_rejections(boot_selection_t *selection)
+{
+    for (uint32_t i = 0U; i < 2U; i++) {
+        if ((selection->ram_rejected_mask & (uint8_t)(1U << i)) != 0U) {
+            boot_slot_info_t *info = &selection->slot[i];
+            if (!info->rejected) {
+                info->rejected_reason = BOOT_REJECT_TRIAL_LIMIT;
+            }
+            info->rejected = true;
+            info->valid = false;
+        }
+    }
+}
+
+static void scan_metadata(boot_selection_t *selection)
+{
     for (uint32_t i = 0U; i < 2U; i++) {
         boot_slot_t slot = (boot_slot_t)i;
         boot_slot_info_t *info = &selection->slot[i];
@@ -76,15 +97,107 @@ void boot_selection_scan(boot_selection_t *selection)
             info->rejected = true;
         }
 
-        if (info->header_valid && info->activated && info->sequence_valid &&
-            !info->rejected) {
-            info->vectors_ok = boot_image_vectors_valid(slot);
-            if (info->vectors_ok) {
-                info->crc_ok = boot_image_crc_matches(slot, &info->header);
-            }
-            info->valid = info->vectors_ok && info->crc_ok;
+        info->trial_count = (uint8_t)boot_meta_trial_count(slot);
+    }
+}
+
+static void check_vectors(boot_selection_t *selection)
+{
+    for (uint32_t i = 0U; i < 2U; i++) {
+        boot_slot_info_t *info = &selection->slot[i];
+        if (metadata_ok(info)) {
+            info->vectors_ok = boot_image_vectors_valid((boot_slot_t)i);
         }
     }
+}
+
+static void check_crc(boot_selection_t *selection, boot_slot_t slot)
+{
+    boot_slot_info_t *info = &selection->slot[slot];
+    info->crc_checked = true;
+    info->crc_ok = boot_image_crc_matches(slot, &info->header);
+    info->valid = info->vectors_ok && info->crc_ok;
+}
+
+static void scan_slots(boot_selection_t *selection, bool verify_all)
+{
+    uint8_t ram_mask = selection->ram_rejected_mask;
+    memset(selection, 0, sizeof(*selection));
+    selection->ram_rejected_mask = ram_mask;
+
+    scan_metadata(selection);
+    apply_ram_rejections(selection);
+    check_vectors(selection);
+
+    if (verify_all) {
+        for (uint32_t i = 0U; i < 2U; i++) {
+            if (metadata_ok(&selection->slot[i]) &&
+                selection->slot[i].vectors_ok) {
+                check_crc(selection, (boot_slot_t)i);
+            }
+        }
+        return;
+    }
+
+    /* P2-7: verify the best candidate first and only fall back when it
+     * fails.  A lower-sequence slot is never checked while the candidate
+     * passes, which halves the boot-time CRC work. */
+    bool tried[2] = {false, false};
+    for (uint32_t pass = 0U; pass < 2U; pass++) {
+        int32_t best = -1;
+        uint32_t best_sequence = 0U;
+
+        for (uint32_t i = 0U; i < 2U; i++) {
+            const boot_slot_info_t *info = &selection->slot[i];
+            if (tried[i] || !metadata_ok(info) || !info->vectors_ok) {
+                continue;
+            }
+            if (best < 0 || info->sequence > best_sequence) {
+                best = (int32_t)i;
+                best_sequence = info->sequence;
+            }
+        }
+        if (best < 0) {
+            break;
+        }
+        tried[best] = true;
+        check_crc(selection, (boot_slot_t)best);
+        if (selection->slot[best].valid) {
+            break;
+        }
+    }
+}
+
+void boot_selection_scan(boot_selection_t *selection)
+{
+    scan_slots(selection, false);
+}
+
+void boot_selection_scan_full(boot_selection_t *selection)
+{
+    scan_slots(selection, true);
+}
+
+void boot_selection_refresh_slots(boot_selection_t *selection)
+{
+    boot_selection_t refreshed = *selection;
+
+    boot_selection_scan_full(&refreshed);
+    for (uint32_t i = 0U; i < 2U; i++) {
+        selection->slot[i] = refreshed.slot[i];
+    }
+}
+
+void boot_selection_mark_rejected(boot_selection_t *selection,
+                                  boot_slot_t slot, uint32_t reason)
+{
+    if (selection == NULL || (uint32_t)slot >= 2U) {
+        return;
+    }
+    selection->ram_rejected_mask |= (uint8_t)(1U << (uint32_t)slot);
+    selection->slot[slot].rejected = true;
+    selection->slot[slot].rejected_reason = reason;
+    selection->slot[slot].valid = false;
 }
 
 void boot_selection_choose(boot_selection_t *selection)
@@ -121,14 +234,19 @@ void boot_selection_choose(boot_selection_t *selection)
         return;
     }
 
+    uint8_t count = info->trial_count;
     uint32_t raw = *bkp(0);
     if ((raw & BOOT_TRIAL_MAGIC_MASK) == BOOT_TRIAL_MAGIC &&
         ((raw >> BOOT_TRIAL_SLOT_SHIFT) & BOOT_TRIAL_SLOT_MASK) ==
             (uint32_t)selection->active) {
-        selection->trial_count =
+        uint8_t rtc_count =
             (uint8_t)((raw >> BOOT_TRIAL_COUNT_SHIFT) &
                       BOOT_TRIAL_COUNT_MASK);
+        if (rtc_count > count) {
+            count = rtc_count;
+        }
     }
+    selection->trial_count = count;
 }
 
 bool boot_selection_apply_trial_limit(boot_selection_t *selection)
@@ -156,21 +274,28 @@ void boot_selection_start_trial(boot_selection_t *selection)
         return;
     }
 
-    uint32_t raw = *bkp(0);
-    uint32_t count = 0U;
+    boot_slot_t slot = selection->active;
+    boot_slot_info_t *info = &selection->slot[slot];
+    uint32_t count = info->trial_count;
 
-    if ((raw & BOOT_TRIAL_MAGIC_MASK) == BOOT_TRIAL_MAGIC &&
-        ((raw >> BOOT_TRIAL_SLOT_SHIFT) & BOOT_TRIAL_SLOT_MASK) ==
-            (uint32_t)selection->active) {
-        count = (raw >> BOOT_TRIAL_COUNT_SHIFT) & BOOT_TRIAL_COUNT_MASK;
-    }
+    /* P2-6: append a TRIAL record to the active slot's metadata sector.
+     * The count is then independent of VBAT and survives a power cycle. */
     if (count < BOOT_TRIAL_LIMIT) {
-        count++;
+        uint32_t attempt = count + 1U;
+        if (boot_meta_write_trial(slot, attempt)) {
+            info->trial_count = (uint8_t)attempt;
+            count = attempt;
+        } else {
+            /* Keep the RTC counter moving even when the metadata write
+             * fails so that a single bad flash word cannot cause an endless
+             * trial loop within one power session. */
+            count = attempt;
+        }
     }
 
     *bkp(0) = BOOT_TRIAL_MAGIC |
-              ((uint32_t)selection->active << BOOT_TRIAL_SLOT_SHIFT) |
-              (count << BOOT_TRIAL_COUNT_SHIFT);
+              ((uint32_t)slot << BOOT_TRIAL_SLOT_SHIFT) |
+              ((count & BOOT_TRIAL_COUNT_MASK) << BOOT_TRIAL_COUNT_SHIFT);
     __DSB();
     selection->trial_count = (uint8_t)count;
 }

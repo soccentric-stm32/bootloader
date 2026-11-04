@@ -39,12 +39,22 @@ class UpdateBegin(object):
             return obj
         return None
 
-def UpdateBeginStart(builder): builder.StartObject(1)
+    # UpdateBegin
+    def Force(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(6))
+        if o != 0:
+            return bool(self._tab.Get(flatbuffers.number_types.BoolFlags, o + self._tab.Pos))
+        return False
+
+def UpdateBeginStart(builder): builder.StartObject(2)
 def Start(builder):
     return UpdateBeginStart(builder)
 def UpdateBeginAddHeader(builder, header): builder.PrependUOffsetTRelativeSlot(0, flatbuffers.number_types.UOffsetTFlags.py_type(header), 0)
 def AddHeader(builder, header):
     return UpdateBeginAddHeader(builder, header)
+def UpdateBeginAddForce(builder, force): builder.PrependBoolSlot(1, force, 0)
+def AddForce(builder, force):
+    return UpdateBeginAddForce(builder, force)
 def UpdateBeginEnd(builder): return builder.EndObject()
 def End(builder):
     return UpdateBeginEnd(builder)

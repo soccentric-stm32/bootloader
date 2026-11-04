@@ -66,10 +66,10 @@ void boot_update_set_progress_cb(boot_progress_fn callback)
     progress_cb = callback;
 }
 
-static void progress(uint32_t done, uint32_t total)
+static void progress(const char *operation, uint32_t done, uint32_t total)
 {
     if (progress_cb != NULL) {
-        progress_cb(done, total);
+        progress_cb(operation, done, total);
     }
 }
 
@@ -94,11 +94,20 @@ static bool validate_desc(const boot_image_desc_t *desc, boot_error_t *error,
 }
 
 boot_error_t boot_update_begin(boot_update_t *update,
-                               const boot_image_desc_t *desc,
+                               const boot_selection_t *selection,
+                               const boot_image_desc_t *desc, bool force,
                                char *detail, size_t detail_cap)
 {
     if (update == NULL || desc == NULL) {
         return BOOT_ERR_MALFORMED;
+    }
+    /* P0-1: the active slot is on trial, so the other slot is the only
+     * known-good rollback image.  Do not erase its metadata. */
+    if (!force && selection != NULL && selection->active_valid &&
+        selection->active_pending) {
+        detail_set(detail, detail_cap,
+                   "active slot is on trial (confirm or roll back first)");
+        return BOOT_ERR_BAD_STATE;
     }
     if (update->active) {
         /* BNFR-003: a lost link must not wedge the update path.  Restart
@@ -134,7 +143,7 @@ boot_error_t boot_update_begin(boot_update_t *update,
 
     boot_slot_t slot = boot_flash_target_slot();
 
-    progress(0U, header.image_size);
+    progress("update", 0U, header.image_size);
     if (!boot_flash_erase_meta(slot)) {
         detail_set(detail, detail_cap, "metadata sector erase failed");
         return BOOT_ERR_FLASH_ERROR;
@@ -143,7 +152,7 @@ boot_error_t boot_update_begin(boot_update_t *update,
         detail_set(detail, detail_cap, "header program failed");
         return BOOT_ERR_FLASH_ERROR;
     }
-    progress(0U, header.image_size);
+    progress("update", 0U, header.image_size);
 
     boot_update_reset(update);
     update->active        = true;
@@ -179,13 +188,13 @@ static bool ensure_sectors_erased(boot_update_t *update, uint32_t offset,
         if ((update->erased_mask & bit) != 0U) {
             continue;
         }
-        progress(offset, update->image_size);
+        progress("erase", i + 1U, BOOT_SLOT_SECTOR_COUNT);
         if (!boot_flash_erase_slot_sector(update->slot, i)) {
             detail_set(detail, detail_cap, "slot sector erase failed");
             return false;
         }
         update->erased_mask |= bit;
-        progress(offset, update->image_size);
+        progress("erase", i + 1U, BOOT_SLOT_SECTOR_COUNT);
     }
     return true;
 }
@@ -314,7 +323,7 @@ boot_error_t boot_update_end(boot_update_t *update, uint32_t *image_crc,
 
     /* UPD-009: UpdateEnd may take a while for a large image, so report
      * progress before and after the mandatory verification. */
-    progress(0U, update->image_size);
+    progress("update", 0U, update->image_size);
 
     /* Flush the final partial word with 0xFF padding; the image CRC only
      * covers image_size bytes. */
@@ -349,7 +358,7 @@ boot_error_t boot_update_end(boot_update_t *update, uint32_t *image_crc,
         detail_set(detail, detail_cap, "image CRC32 mismatch");
         return BOOT_ERR_CRC_MISMATCH;
     }
-    progress(update->image_size, update->image_size);
+    progress("update", update->image_size, update->image_size);
 
     if (!boot_meta_write_record(update->slot, BOOT_META_VERIFIED_OFFSET,
                                 BOOT_META_VERIFIED_MAGIC, crc)) {
@@ -413,6 +422,13 @@ boot_error_t boot_update_activate(boot_update_t *update,
         return BOOT_ERR_BAD_STATE;
     }
 
+    if (selection != NULL && selection->active_valid &&
+        selection->active_pending) {
+        detail_set(detail, detail_cap,
+                   "active slot is on trial; refusing to activate");
+        return BOOT_ERR_BAD_STATE;
+    }
+
     boot_slot_t other = boot_other_slot(slot);
     uint32_t other_sequence = 0U;
     bool other_present = false;
@@ -427,8 +443,6 @@ boot_error_t boot_update_activate(boot_update_t *update,
     uint32_t sequence = (other_sequence >= 0xFFFFFFFEUL)
                             ? 0xFFFFFFFEUL
                             : other_sequence + 1U;
-
-    (void)selection;
 
     if (!boot_meta_write_record(slot, BOOT_META_ACTIVATED_OFFSET,
                                 BOOT_META_ACTIVATED_MAGIC, sequence)) {

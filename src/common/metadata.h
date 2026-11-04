@@ -34,4 +34,12 @@ bool boot_meta_write_header(boot_slot_t slot,
 bool boot_meta_write_record(boot_slot_t slot, uint32_t offset,
                             uint32_t magic, uint32_t value);
 
+/* P2-6: number of contiguous, valid TRIAL records in a slot's metadata.
+ * This is the trial counter that survives a power loss. */
+uint32_t boot_meta_trial_count(boot_slot_t slot);
+
+/* Append the next TRIAL record.  attempt is 1-based and must be
+ * <= BOOT_META_TRIAL_RECORDS. */
+bool boot_meta_write_trial(boot_slot_t slot, uint32_t attempt);
+
 #endif /* METADATA_H */
