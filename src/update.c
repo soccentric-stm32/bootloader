@@ -247,6 +247,7 @@ boot_error_t boot_update_data(boot_update_t *update, uint32_t offset,
     }
 
     if (!ensure_sectors_erased(update, offset, len, detail, detail_cap)) {
+        boot_update_abort(update);
         return BOOT_ERR_FLASH_ERROR;
     }
 
@@ -270,6 +271,10 @@ boot_error_t boot_update_data(boot_update_t *update, uint32_t offset,
         if (update->word_stage_len == 4U) {
             if (!program_word(update, update->word_stage_offset,
                               update->word_stage, detail, detail_cap)) {
+                /* The staged bytes and programmed words no longer match
+                 * expected_offset.  Drop the session so a retry must start
+                 * with UpdateBegin instead of rewriting half a chunk. */
+                boot_update_abort(update);
                 return BOOT_ERR_FLASH_ERROR;
             }
             update->word_stage_len = 0U;
@@ -316,6 +321,7 @@ boot_error_t boot_update_end(boot_update_t *update, uint32_t *image_crc,
     if (update->word_stage_len > 0U) {
         if (!ensure_sectors_erased(update, update->word_stage_offset, 4U,
                                    detail, detail_cap)) {
+            boot_update_abort(update);
             return BOOT_ERR_FLASH_ERROR;
         }
         for (uint32_t i = update->word_stage_len; i < 4U; i++) {
@@ -323,6 +329,7 @@ boot_error_t boot_update_end(boot_update_t *update, uint32_t *image_crc,
         }
         if (!program_word(update, update->word_stage_offset,
                           update->word_stage, detail, detail_cap)) {
+            boot_update_abort(update);
             return BOOT_ERR_FLASH_ERROR;
         }
         update->word_stage_len = 0U;
