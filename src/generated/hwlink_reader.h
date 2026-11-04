@@ -1129,6 +1129,7 @@ __flatbuffers_define_scalar_field(8, hwlink_ImageHeader, entry_address, flatbuff
 __flatbuffers_define_scalar_field(9, hwlink_ImageHeader, build_timestamp, flatbuffers_uint32, uint32_t, UINT32_C(0))
 __flatbuffers_define_vector_field(10, hwlink_ImageHeader, git_commit, flatbuffers_uint8_vec_t, 0)
 __flatbuffers_define_string_field(11, hwlink_ImageHeader, name, 0)
+__flatbuffers_define_scalar_field(12, hwlink_ImageHeader, header_crc32, flatbuffers_uint32, uint32_t, UINT32_C(0))
 
 struct hwlink_BootSlotInfo_table { uint8_t unused__; };
 

@@ -396,6 +396,9 @@ static void handle_update_begin(uint16_t seq,
     desc.load_address    = hwlink_ImageHeader_load_address(image);
     desc.entry_address   = hwlink_ImageHeader_entry_address(image);
     desc.build_timestamp = hwlink_ImageHeader_build_timestamp(image);
+    desc.header_crc32   = hwlink_ImageHeader_header_crc32(image);
+    desc.header_crc32_present =
+        hwlink_ImageHeader_header_crc32_is_present(image) != 0;
 
     flatbuffers_string_t name = hwlink_ImageHeader_name(image);
     size_t name_len = flatbuffers_string_len(name);
@@ -677,7 +680,10 @@ bool boot_proto_listen_for_hello(uint32_t window_ms)
     while ((HAL_GetTick() - start) < window_ms) {
         boot_iwdg_kick();
         boot_proto_poll();
-        if (hello_seen) {
+        if (hello_seen || (g_update != NULL && g_update->active)) {
+            /* A Hello entered update mode, or an UpdateBegin did so without
+             * a preceding Hello.  Either way, do not boot over an active
+             * update session. */
             return true;
         }
         HAL_Delay(1U);

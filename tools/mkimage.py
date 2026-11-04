@@ -85,10 +85,6 @@ def validate_binary(binary: bytes) -> list[str]:
     if len(binary) > SLOT_SIZE:
         errors.append(f"binary is {len(binary)} bytes; the slot is {SLOT_SIZE}")
 
-    if len(binary) < 8:
-        errors.append("binary is too small for a vector table")
-        return errors
-
     sp, entry = struct.unpack_from("<II", binary, 0)
     if not (RAM_START < sp <= RAM_END) or (sp & 0x7):
         errors.append(f"initial SP 0x{sp:08x} is not in internal RAM")

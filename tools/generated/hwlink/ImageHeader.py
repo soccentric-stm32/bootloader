@@ -132,7 +132,14 @@ class ImageHeader(object):
             return self._tab.String(o + self._tab.Pos)
         return None
 
-def ImageHeaderStart(builder): builder.StartObject(12)
+    # ImageHeader
+    def HeaderCrc32(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(28))
+        if o != 0:
+            return self._tab.Get(flatbuffers.number_types.Uint32Flags, o + self._tab.Pos)
+        return 0
+
+def ImageHeaderStart(builder): builder.StartObject(13)
 def Start(builder):
     return ImageHeaderStart(builder)
 def ImageHeaderAddMagic(builder, magic): builder.PrependUint32Slot(0, magic, 0)
@@ -174,6 +181,9 @@ def StartGitCommitVector(builder, numElems):
 def ImageHeaderAddName(builder, name): builder.PrependUOffsetTRelativeSlot(11, flatbuffers.number_types.UOffsetTFlags.py_type(name), 0)
 def AddName(builder, name):
     return ImageHeaderAddName(builder, name)
+def ImageHeaderAddHeaderCrc32(builder, headerCrc32): builder.PrependUint32Slot(12, headerCrc32, 0)
+def AddHeaderCrc32(builder, headerCrc32):
+    return ImageHeaderAddHeaderCrc32(builder, headerCrc32)
 def ImageHeaderEnd(builder): return builder.EndObject()
 def End(builder):
     return ImageHeaderEnd(builder)

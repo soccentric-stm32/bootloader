@@ -50,6 +50,8 @@ typedef struct {
     uint32_t git_commit_len;
     char     name[32];
     uint32_t name_len;
+    uint32_t header_crc32;
+    bool     header_crc32_present;
 } boot_image_desc_t;
 
 typedef struct {

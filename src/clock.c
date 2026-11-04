@@ -66,8 +66,14 @@ void boot_clock_deinit(void)
     while ((RCC->CFGR & RCC_CFGR_SWS) != 0U) {
     }
 
-    /* 16 MHz needs 0 flash wait states. */
+    /* 16 MHz needs 0 flash wait states.  HND-001: leave prefetch and the
+     * ART accelerator off and flush the ART cache. */
     CLEAR_BIT(FLASH->ACR, FLASH_ACR_LATENCY);
+    CLEAR_BIT(FLASH->ACR, FLASH_ACR_ARTEN | FLASH_ACR_PRFTEN);
+    SET_BIT(FLASH->ACR, FLASH_ACR_ARTRST);
+    __DSB();
+    CLEAR_BIT(FLASH->ACR, FLASH_ACR_ARTRST);
+    __DSB();
 
     /* PLL, PLLI2S, PLLSAI and HSE off. */
     CLEAR_BIT(RCC->CR, RCC_CR_PLLON);
@@ -81,6 +87,14 @@ void boot_clock_deinit(void)
     }
     CLEAR_BIT(RCC->CR, RCC_CR_HSEON | RCC_CR_HSEBYP | RCC_CR_CSSON);
     while ((RCC->CR & RCC_CR_HSERDY) != 0U) {
+    }
+
+    /* HND-001: leave over-drive disabled (reset state). */
+    CLEAR_BIT(PWR->CR1, PWR_CR1_ODSWEN);
+    while ((PWR->CSR1 & PWR_CSR1_ODSWRDY) != 0U) {
+    }
+    CLEAR_BIT(PWR->CR1, PWR_CR1_ODEN);
+    while ((PWR->CSR1 & PWR_CSR1_ODRDY) != 0U) {
     }
 
     /* Reset the PLL configuration registers while the PLLs are off. */

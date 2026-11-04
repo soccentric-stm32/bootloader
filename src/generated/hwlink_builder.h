@@ -156,7 +156,7 @@ __flatbuffers_build_table(flatbuffers_, hwlink_ButtonEvent, 3)
 static const flatbuffers_voffset_t __hwlink_ImageHeader_required[] = { 0 };
 typedef flatbuffers_ref_t hwlink_ImageHeader_ref_t;
 static hwlink_ImageHeader_ref_t hwlink_ImageHeader_clone(flatbuffers_builder_t *B, hwlink_ImageHeader_table_t t);
-__flatbuffers_build_table(flatbuffers_, hwlink_ImageHeader, 12)
+__flatbuffers_build_table(flatbuffers_, hwlink_ImageHeader, 13)
 
 static const flatbuffers_voffset_t __hwlink_BootSlotInfo_required[] = { 0 };
 typedef flatbuffers_ref_t hwlink_BootSlotInfo_ref_t;
@@ -333,11 +333,11 @@ __flatbuffers_build_table_prolog(flatbuffers_, hwlink_ButtonEvent, hwlink_Button
 #define __hwlink_ImageHeader_formal_args ,\
   uint32_t v0, uint16_t v1, uint16_t v2, uint32_t v3,\
   uint32_t v4, uint32_t v5, uint32_t v6, uint32_t v7,\
-  uint32_t v8, uint32_t v9, flatbuffers_uint8_vec_ref_t v10, flatbuffers_string_ref_t v11
+  uint32_t v8, uint32_t v9, flatbuffers_uint8_vec_ref_t v10, flatbuffers_string_ref_t v11, uint32_t v12
 #define __hwlink_ImageHeader_call_args ,\
   v0, v1, v2, v3,\
   v4, v5, v6, v7,\
-  v8, v9, v10, v11
+  v8, v9, v10, v11, v12
 static inline hwlink_ImageHeader_ref_t hwlink_ImageHeader_create(flatbuffers_builder_t *B __hwlink_ImageHeader_formal_args);
 __flatbuffers_build_table_prolog(flatbuffers_, hwlink_ImageHeader, hwlink_ImageHeader_file_identifier, hwlink_ImageHeader_type_identifier)
 
@@ -1085,6 +1085,7 @@ __flatbuffers_build_scalar_field(8, flatbuffers_, hwlink_ImageHeader_entry_addre
 __flatbuffers_build_scalar_field(9, flatbuffers_, hwlink_ImageHeader_build_timestamp, flatbuffers_uint32, uint32_t, 4, 4, UINT32_C(0), hwlink_ImageHeader)
 __flatbuffers_build_vector_field(10, flatbuffers_, hwlink_ImageHeader_git_commit, flatbuffers_uint8, uint8_t, hwlink_ImageHeader)
 __flatbuffers_build_string_field(11, flatbuffers_, hwlink_ImageHeader_name, hwlink_ImageHeader)
+__flatbuffers_build_scalar_field(12, flatbuffers_, hwlink_ImageHeader_header_crc32, flatbuffers_uint32, uint32_t, 4, 4, UINT32_C(0), hwlink_ImageHeader)
 
 static inline hwlink_ImageHeader_ref_t hwlink_ImageHeader_create(flatbuffers_builder_t *B __hwlink_ImageHeader_formal_args)
 {
@@ -1099,6 +1100,7 @@ static inline hwlink_ImageHeader_ref_t hwlink_ImageHeader_create(flatbuffers_bui
         || hwlink_ImageHeader_build_timestamp_add(B, v9)
         || hwlink_ImageHeader_git_commit_add(B, v10)
         || hwlink_ImageHeader_name_add(B, v11)
+        || hwlink_ImageHeader_header_crc32_add(B, v12)
         || hwlink_ImageHeader_header_version_add(B, v1)
         || hwlink_ImageHeader_header_size_add(B, v2)) {
         return 0;
@@ -1120,6 +1122,7 @@ static hwlink_ImageHeader_ref_t hwlink_ImageHeader_clone(flatbuffers_builder_t *
         || hwlink_ImageHeader_build_timestamp_pick(B, t)
         || hwlink_ImageHeader_git_commit_pick(B, t)
         || hwlink_ImageHeader_name_pick(B, t)
+        || hwlink_ImageHeader_header_crc32_pick(B, t)
         || hwlink_ImageHeader_header_version_pick(B, t)
         || hwlink_ImageHeader_header_size_pick(B, t)) {
         return 0;

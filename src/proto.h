@@ -23,8 +23,10 @@ void boot_proto_init(boot_selection_t *selection, boot_update_t *update);
 /* Process all bytes that the DMA ring has received. */
 void boot_proto_poll(void);
 
-/* ENT-001: wait up to window_ms for a Hello.  Returns true when one arrived.
- * Other requests received in the window are answered normally. */
+/* ENT-001: wait up to window_ms for a Hello.  Returns true when one arrived,
+ * or when an UpdateBegin started an update session during the window (so
+ * BOOT does not boot over a live update).  Other requests received in the
+ * window are answered normally. */
 bool boot_proto_listen_for_hello(uint32_t window_ms);
 
 /* Serve HWLINK until Reset/Activate (never returns) or until 120 s pass

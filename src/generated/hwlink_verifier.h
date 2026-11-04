@@ -680,6 +680,7 @@ static int hwlink_ImageHeader_verify_table(flatcc_table_verifier_descriptor_t *t
     if ((ret = flatcc_verify_field(td, 9, 4, 4) /* build_timestamp */)) return ret;
     if ((ret = flatcc_verify_vector_field(td, 10, 0, 1, 1, INT64_C(4294967295)) /* git_commit */)) return ret;
     if ((ret = flatcc_verify_string_field(td, 11, 0) /* name */)) return ret;
+    if ((ret = flatcc_verify_field(td, 12, 4, 4) /* header_crc32 */)) return ret;
     return flatcc_verify_ok;
 }
 

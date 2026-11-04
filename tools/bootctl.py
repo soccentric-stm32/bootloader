@@ -37,6 +37,7 @@ from hwlink import Ack, Activate, BootInfo, BootOutcome, Error, \
     UpdateEnd, UpdateResult  # noqa: E402
 
 PROTOCOL_MAJOR = 1
+PROTOCOL_MINOR = 1
 HWLINK_FLAG_RESPONSE = 1 << 0
 HWLINK_FLAG_EVENT = 1 << 1
 MAX_FRAME = 2048
@@ -251,7 +252,7 @@ class Link:
         Hello.HelloStart(builder)
         Hello.HelloAddHostName(builder, host)
         Hello.HelloAddHostVersion(builder, version)
-        Hello.HelloAddProtocolMinor(builder, 0)
+        Hello.HelloAddProtocolMinor(builder, PROTOCOL_MINOR)
         body = Hello.HelloEnd(builder)
         response = self.request(finish(builder, 1, body))
         message = Message.Message.GetRootAs(response, 0)
@@ -290,6 +291,7 @@ def parse_image(path: pathlib.Path):
         "version": version,
         "image_size": image_size,
         "image_crc32": image_crc32,
+        "header_crc32": header_crc32,
         "load_address": load_address,
         "entry_address": entry_address,
         "build_timestamp": build_timestamp,
@@ -352,6 +354,7 @@ def send_update_begin(link: Link, image) -> None:
     ImageHeader.ImageHeaderAddBuildTimestamp(builder, image["build_timestamp"])
     ImageHeader.ImageHeaderAddGitCommit(builder, git)
     ImageHeader.ImageHeaderAddName(builder, name)
+    ImageHeader.ImageHeaderAddHeaderCrc32(builder, image["header_crc32"])
     header = ImageHeader.ImageHeaderEnd(builder)
 
     UpdateBegin.UpdateBeginStart(builder)

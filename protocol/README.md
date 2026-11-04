@@ -23,5 +23,9 @@ flatc --python -o tools/generated protocol/hwlink.fbs
 
 The Python flatbuffers runtime is vendored in `../tools/vendor`.
 
+Protocol minor 1 appends `ImageHeader.header_crc32` (IMG-001).  The field is
+optional on the wire: older hosts may omit it and BOOT recomputes the header
+CRC from the remaining fields.
+
 `Message.body` is an append-only union: add new members at the end and raise
 the protocol minor version (LNK-013).  The file identifier is `HWLK`.

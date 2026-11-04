@@ -41,13 +41,21 @@ boot_swap_and_jump:
     isb
 
 1:
-    /* HND-001 / SWP-002: leave the ART accelerator off (FLASH_ACR.ARTEN)
-     * and invalidate the instruction cache (SCB->ICIALLU). */
+    /* HND-001 / SWP-002: leave prefetch and the ART accelerator off,
+     * flush the ART accelerator (ARTRST) and invalidate the instruction
+     * cache (SCB->ICIALLU). */
     movw    r3, #0x3C00
     movt    r3, #0x4002
     ldr     r4, [r3]
-    bic     r4, r4, #0x200
+    bic     r4, r4, #0x300          /* PRFTEN | ARTEN */
     str     r4, [r3]
+    orr     r4, r4, #0x800          /* ARTRST = 1 */
+    str     r4, [r3]
+    dsb
+    bic     r4, r4, #0x800          /* ARTRST = 0 */
+    str     r4, [r3]
+    dsb
+    isb
 
     movw    r3, #0xEF50
     movt    r3, #0xE000

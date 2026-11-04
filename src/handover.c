@@ -59,6 +59,11 @@ void boot_handover(boot_slot_t slot)
     /* BGEN-008: all LEDs off at hand-over (GPIO clocks still on). */
     leds_off();
 
+    /* HND-001: return the GPIO pins used by BOOT to their reset state. */
+    HAL_GPIO_DeInit(BOOT_LED1_PORT,
+                    BOOT_LED1_PIN | BOOT_LED2_PIN | BOOT_LED3_PIN);
+    HAL_GPIO_DeInit(BOOT_BTN1_PORT, BOOT_BTN1_PIN);
+
     __HAL_RCC_CRC_CLK_DISABLE();
     __HAL_RCC_GPIOB_CLK_DISABLE();
     __HAL_RCC_GPIOC_CLK_DISABLE();

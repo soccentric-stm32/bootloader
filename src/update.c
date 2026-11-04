@@ -121,8 +121,18 @@ boot_error_t boot_update_begin(boot_update_t *update,
     memcpy(header.name, desc->name, sizeof(header.name));
     boot_image_header_finalize(&header);
 
+    /* IMG-001: when the host sends the header CRC, require it to match the
+     * reconstructed 256-byte header.  Older hosts omit the field and BOOT
+     * recomputes it. */
+    if (desc->header_crc32_present &&
+        desc->header_crc32 != header.header_crc32) {
+        detail_set(detail, detail_cap, "header CRC32 mismatch");
+        return BOOT_ERR_BAD_HEADER;
+    }
+
     boot_slot_t slot = boot_flash_target_slot();
 
+    progress(0U, header.image_size);
     if (!boot_flash_erase_meta(slot)) {
         detail_set(detail, detail_cap, "metadata sector erase failed");
         return BOOT_ERR_FLASH_ERROR;
@@ -131,6 +141,7 @@ boot_error_t boot_update_begin(boot_update_t *update,
         detail_set(detail, detail_cap, "header program failed");
         return BOOT_ERR_FLASH_ERROR;
     }
+    progress(0U, header.image_size);
 
     boot_update_reset(update);
     update->active        = true;
@@ -294,6 +305,10 @@ boot_error_t boot_update_end(boot_update_t *update, uint32_t *image_crc,
         return BOOT_ERR_BAD_STATE;
     }
 
+    /* UPD-009: UpdateEnd may take a while for a large image, so report
+     * progress before and after the mandatory verification. */
+    progress(0U, update->image_size);
+
     /* Flush the final partial word with 0xFF padding; the image CRC only
      * covers image_size bytes. */
     if (update->word_stage_len > 0U) {
@@ -325,6 +340,7 @@ boot_error_t boot_update_end(boot_update_t *update, uint32_t *image_crc,
         detail_set(detail, detail_cap, "image CRC32 mismatch");
         return BOOT_ERR_CRC_MISMATCH;
     }
+    progress(update->image_size, update->image_size);
 
     if (!boot_meta_write_record(update->slot, BOOT_META_VERIFIED_OFFSET,
                                 BOOT_META_VERIFIED_MAGIC, crc)) {

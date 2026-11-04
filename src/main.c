@@ -128,8 +128,22 @@ int main(void)
 
     /* TRY-003: a pending slot that has used up its trials is rejected and
      * the selection is made again. */
+    bool trial_limit_pending = boot_selection.active_valid &&
+                               boot_selection.active_pending &&
+                               boot_selection.trial_count >= BOOT_TRIAL_LIMIT;
     if (boot_selection_apply_trial_limit(&boot_selection)) {
         boot_rescan_and_choose();
+    } else if (trial_limit_pending) {
+        /* The REJECTED record could not be programmed.  Never boot a slot
+         * that has exhausted its trials: reject it in RAM for this boot and
+         * select the other slot, or stay in update mode if none is valid. */
+        boot_selection.slot[boot_selection.active].rejected = true;
+        boot_selection.slot[boot_selection.active].rejected_reason =
+            BOOT_REJECT_TRIAL_LIMIT;
+        boot_selection.slot[boot_selection.active].valid = false;
+        boot_selection_choose(&boot_selection);
+        boot_flash_set_active(boot_selection.active,
+                              boot_selection.active_valid);
     }
 
     /* TRY-006: a confirmed slot clears the trial counter. */

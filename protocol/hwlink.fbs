@@ -253,6 +253,9 @@ table ImageHeader {
     build_timestamp:uint32;
     git_commit:[ubyte];
     name:string;
+    // IMG-001: CRC32 of header bytes 0..251.  Appended for protocol
+    // minor 1; older hosts may omit it, in which case BOOT recomputes it.
+    header_crc32:uint32;
 }
 
 table BootSlotInfo {
