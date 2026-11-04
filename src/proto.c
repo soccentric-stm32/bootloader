@@ -38,7 +38,7 @@
 #define BOOT_BUILD_DATE "unknown"
 #endif
 
-#define BOOT_TX_TIMEOUT_MS 200U
+
 
 static flatcc_builder_t builder;
 
@@ -62,6 +62,8 @@ static boot_update_t *g_update;
 static bool hello_seen;
 static uint32_t last_activity_ms;
 
+static uint32_t tx_timeout_ms(uint16_t len);
+
 static bool send_payload(const uint8_t *payload, size_t payload_len,
                          uint8_t flags, uint16_t seq, bool store)
 {
@@ -81,7 +83,7 @@ static bool send_payload(const uint8_t *payload, size_t payload_len,
         return false;
     }
     return boot_uart3_send(tx_frame, (uint16_t)encoded_len,
-                           BOOT_TX_TIMEOUT_MS);
+                           tx_timeout_ms((uint16_t)encoded_len));
 }
 
 static bool send_body(hwlink_Body_union_ref_t body, uint16_t seq,
@@ -137,6 +139,18 @@ static bool send_pong(uint16_t seq)
     return pong != 0 &&
            send_body(hwlink_Body_as_Pong(pong), seq, HWLINK_FLAG_RESPONSE,
                      true);
+}
+
+/* A full frame at 115200 takes about 180 ms; derive the timeout from the
+ * encoded length and the current baud rate instead of a fixed 200 ms. */
+static uint32_t tx_timeout_ms(uint16_t len)
+{
+    uint32_t baud = boot_uart3_baud();
+    if (baud == 0U) {
+        baud = 115200U;
+    }
+    uint32_t ms = (uint32_t)(((uint64_t)len * 10U * 1000U) / baud);
+    return ms + 50U;
 }
 
 static hwlink_FlashMode_enum_t flash_mode(void)
@@ -624,7 +638,7 @@ static void handle_raw(const uint8_t *raw, size_t raw_len)
         if (hwlink_cobs_encode(last_response, last_response_len, tx_frame,
                                sizeof(tx_frame), &encoded_len)) {
             (void)boot_uart3_send(tx_frame, (uint16_t)encoded_len,
-                                  BOOT_TX_TIMEOUT_MS);
+                                  tx_timeout_ms((uint16_t)encoded_len));
         }
         return;
     }
