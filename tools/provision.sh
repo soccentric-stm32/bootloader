@@ -62,21 +62,29 @@ if [[ "$WRITE_OPTIONS" -eq 1 ]]; then
     echo "$read_output"
 
     user_options="$(sed -n 's/.*user_options 0x\([0-9A-Fa-f]*\).*/\1/p' <<<"$read_output" | head -1)"
-    if [[ -z "$user_options" ]]; then
+    boot_add0="$(sed -n 's/.*boot_add0 0x\([0-9A-Fa-f]*\).*/\1/p' <<<"$read_output" | head -1)"
+    boot_add1="$(sed -n 's/.*boot_add1 0x\([0-9A-Fa-f]*\).*/\1/p' <<<"$read_output" | head -1)"
+    if [[ -z "$user_options" || -z "$boot_add0" || -z "$boot_add1" ]]; then
         echo "provision: could not read the option bytes" >&2
         echo "provision: check the ST-LINK connection and OPEN-B05" >&2
         exit 1
     fi
 
-    # BASM-002: flash via ITCM at the bank 1 start, dual boot disabled.
-    boot0="0080"
-    boot1="0000"
+    # BASM-002: BOOT_ADD0 is 0x0080 (flash via ITCM, bank 1 start). Keep
+    # BOOT_ADD1 untouched: its default 0x0040 is the ST system-memory
+    # bootloader, the recovery path when BOOT0 is high. Writing 0x0000
+    # would point BOOT0 at ITCM RAM and lose that path.
     old=$((16#$user_options))
     # bit 8 = nDBOOT = 1, bit 9 = nDBANK = 0; keep the other user options.
     new=$(( (old & ~0x300) | 0x100 ))
     new_hex="$(printf '0x%X' "$new")"
+    boot0="$boot_add0"
+    if [[ $((16#$boot_add0)) -ne $((16#0080)) ]]; then
+        boot0="0080"
+    fi
+    boot1="$boot_add1"
 
-    echo "[*] option bytes: user_options 0x${user_options} -> ${new_hex} (nDBANK=0, nDBOOT=1)"
+    echo "[*] option bytes: user_options 0x${user_options} -> ${new_hex} (nDBANK=0, nDBOOT=1), boot_add0 0x${boot_add0} -> 0x${boot0}, boot_add1 0x${boot1} (kept)"
     write_output="$(run_openocd -c "init; reset halt; stm32f2x options_write 0 ${new_hex} 0x${boot0} 0x${boot1}; shutdown")" || true
     echo "$write_output"
 
