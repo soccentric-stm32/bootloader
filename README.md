@@ -214,6 +214,23 @@ by `bootctl.py`.  The C headers in `src/protocol/generated` and the Python packa
 `tools/generated` are generated from `protocol/hwlink.fbs`.  STM32CubeF7 is
 fetched by the Docker image and keeps its own licence.
 
+## CI and releases
+
+The [Jenkinsfile](Jenkinsfile) runs the build and checks, then **Package**
+builds `dist/bootloader-<version>.tar.gz` with the outputs, a `manifest.json`
+(version, commit, build) and `SHA256SUMS`, and archives `dist/`. For a tag
+`v<version>`, **Release** publishes `dist/` as a GitHub release
+(`ci/github_release.py`, Jenkins credential `github-release-token`); the tag
+must match the version the build reports (`ci/version.sh`), and 0.x versions
+are marked as pre-releases.
+
+To release, bump the version (`BOOT_VERSION` in `CMakeLists.txt`), push it, then push a matching tag:
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
 ## License
 
 [MIT](LICENSE) © 2026 Sandesh Ghimire. Use it as a starting point for your own

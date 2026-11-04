@@ -1,7 +1,14 @@
 // Jenkinsfile - multi-stage CI for the STM32 A/B bootloader.
 //
 //   Checkout -> Toolchain -> Build -> Host tests -> Python tests -> Static
-//   analysis -> Layout contract -> Image tool -> HIL (optional) -> Publish
+//   analysis -> Layout contract -> Image tool -> HIL (optional) -> Package
+//   -> Release (tags) -> Archive
+//
+// Package builds dist/<repo>-<version>.tar.gz (outputs, manifest.json,
+// SHA256SUMS) on every run.  Release runs only for a tag v<version> and
+// publishes dist/ as a GitHub release with the Jenkins secret-text credential
+// github-release-token.  To release: bump the version, push, then push the
+// tag (git tag v0.2.0 && git push origin v0.2.0).
 //
 // Builds run through scripts/docker-dev.sh (BCON-001); the stm32-dev image is
 // built from docker/Dockerfile on first use. The layout stage keeps the
@@ -252,16 +259,31 @@ PY
             }
         }
 
-        stage('Publish') {
+        stage('Package') {
             steps {
                 sh '''
                     make package-hwlink
-                    sha256sum build/boot.elf build/boot.bin build/boot.hex > build/SHA256SUMS
-                    sha256sum build/boot.map >> build/SHA256SUMS
-                    cat build/SHA256SUMS
+                    python3 ci/package.py --name bootloader --version "$(ci/version.sh)" \\
+                        build/boot.elf build/boot.bin build/boot.hex build/boot.map build/soccentric-hwlink \\
+                        README.md LICENSE
                 '''
-                archiveArtifacts artifacts: 'build/boot.elf,build/boot.bin,build/boot.hex,build/boot.map,build/SHA256SUMS,build/soccentric-hwlink/**',
-                                 fingerprint: true
+            }
+        }
+
+        stage('Release') {
+            // Only for a tag build (Multibranch job with tag discovery).  The
+            // tag must be v<version>; ci/github_release.py checks it.
+            when { buildingTag() }
+            steps {
+                withCredentials([string(credentialsId: 'github-release-token', variable: 'GITHUB_TOKEN')]) {
+                    sh 'python3 ci/github_release.py --tag "${TAG_NAME}" --version "$(ci/version.sh)" dist/*'
+                }
+            }
+        }
+
+        stage('Archive') {
+            steps {
+                archiveArtifacts artifacts: 'dist/*', fingerprint: true
             }
         }
     }
