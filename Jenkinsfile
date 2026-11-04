@@ -97,14 +97,14 @@ expected = {
 }
 
 defines = {}
-for line in Path("src/boot_layout.h").read_text(encoding="utf-8").splitlines():
+for line in Path("src/common/boot_layout.h").read_text(encoding="utf-8").splitlines():
     parts = line.split()
     if len(parts) >= 3 and parts[0] == "#define":
         defines[parts[1]] = parts[2]
 
 for name, want in expected.items():
     if name not in defines:
-        raise SystemExit(f"layout: {name} is missing from src/boot_layout.h")
+        raise SystemExit(f"layout: {name} is missing from src/common/boot_layout.h")
     got = int(defines[name].rstrip("ULul").rstrip("ULul"), 16)
     if got != want:
         raise SystemExit(f"layout: {name} is 0x{got:08X}, expected 0x{want:08X}")

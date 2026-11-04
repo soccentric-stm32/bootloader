@@ -63,7 +63,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 add_compile_options(${CPU_FLAGS} -Wall -Wextra -Werror -ffunction-sections -fdata-sections)
 # flatcc runtime allocation hooks (BCON-003: no malloc) are visible wherever
 # the runtime headers expand FLATCC_ALLOC.  Applied to C sources only.
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -include ${CMAKE_SOURCE_DIR}/src/flatcc_port.h")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -include ${CMAKE_SOURCE_DIR}/src/protocol/flatcc_port.h")
 # BCON-003: no dynamic memory and no stdio, so no syscall layer is linked.
 add_link_options(${CPU_FLAGS} -Wl,--gc-sections -Wl,--cref
     -Wl,-Map=${CMAKE_BINARY_DIR}/boot.map
@@ -84,8 +84,18 @@ add_compile_definitions(
     BOOT_GIT_COMMIT="${BOOT_GIT_COMMIT}"
     BOOT_BUILD_DATE="${BOOT_BUILD_DATE}")
 
-include_directories(src board
-    "${CMAKE_SOURCE_DIR}/src/generated"
+# Source tree layout (see src/README.md):
+#   app/      boot flow: main, slot selection, update state machine, hand-over
+#   bsp/      STM32F7 board support (HAL-facing drivers)
+#   common/   hardware-independent helpers: layout, CRC32, image, metadata
+#   protocol/ HWLINK wire protocol, flatcc port and generated FlatBuffers headers
+include_directories(
+    src/app
+    src/bsp
+    src/common
+    src/protocol
+    board
+    "${CMAKE_SOURCE_DIR}/src/protocol/generated"
     "${CMAKE_SOURCE_DIR}/third_party/flatcc/include"
     "${CUBE_ROOT}/Drivers/CMSIS/Include"
     "${CUBE_ROOT}/Drivers/CMSIS/Device/ST/STM32F7xx/Include"
@@ -110,7 +120,7 @@ set(HAL_SOURCES
 
 # The generated flatcc headers use compact macro formatting that trips
 # -Wmisleading-indentation in the one translation unit that includes them.
-set_source_files_properties(src/proto.c PROPERTIES
+set_source_files_properties(src/protocol/proto.c PROPERTIES
     COMPILE_OPTIONS "-Wno-misleading-indentation")
 
 # flatcc 0.6.1 runtime as released (BCON-002).  Only builder, verifier,
@@ -122,23 +132,39 @@ set(FLATCC_SOURCES
     "${FLATCC_ROOT}/src/runtime/emitter.c"
     "${FLATCC_ROOT}/src/runtime/refmap.c")
 
+# app: boot flow
+set(APP_SOURCES
+    src/app/main.c
+    src/app/handover.c
+    src/app/selection.c
+    src/app/update.c
+    src/app/swap_jump.S)
+
+# bsp: STM32F7 board support
+set(BSP_SOURCES
+    src/bsp/clock.c
+    src/bsp/fault.c
+    src/bsp/flash.c
+    src/bsp/iwdg.c
+    src/bsp/uart3.c)
+
+# common: hardware-independent helpers
+set(COMMON_SOURCES
+    src/common/crc32.c
+    src/common/image.c
+    src/common/metadata.c)
+
+# protocol: HWLINK server and flatcc integration
+set(PROTOCOL_SOURCES
+    src/protocol/hwlink.c
+    src/protocol/proto.c
+    src/protocol/flatcc_port.c)
+
 set(PROJECT_SOURCES
-    src/main.c
-    src/handover.c
-    src/fault.c
-    src/clock.c
-    src/crc32.c
-    src/flash.c
-    src/image.c
-    src/iwdg.c
-    src/metadata.c
-    src/proto.c
-    src/selection.c
-    src/uart3.c
-    src/update.c
-    src/hwlink.c
-    src/flatcc_port.c
-    src/swap_jump.S)
+    ${APP_SOURCES}
+    ${BSP_SOURCES}
+    ${COMMON_SOURCES}
+    ${PROTOCOL_SOURCES})
 
 set(DEVICE_SOURCES
     "${CUBE_ROOT}/Drivers/CMSIS/Device/ST/STM32F7xx/Source/Templates/system_stm32f7xx.c"

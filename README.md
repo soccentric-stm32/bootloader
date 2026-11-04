@@ -23,7 +23,7 @@ rollback.
 Slot A is in bank 1, slot B in bank 2.  The same application binary runs from
 either slot: BOOT maps the active bank to `0x0800 0000` with
 `SYSCFG_MEMRMP.SWP_FB` and jumps to `0x0800 C000`.  The swap and jump routine
-runs from DTCM (`src/swap_jump.S`) because the swap remaps the bank BOOT
+runs from DTCM (`src/app/swap_jump.S`) because the swap remaps the bank BOOT
 itself executes from.
 
 The metadata sector is append-only.  Each record is 32 bytes: magic, one
@@ -41,6 +41,24 @@ cannot access the tightly coupled memory on the STM32F7.
 BOOT runs at 216 MHz from the 8 MHz ST-LINK MCO (HSE bypass, PLLN = 432,
 PLLP = 2, over-drive, 7 flash wait states).  USART3 is on APB1 at 54 MHz,
 which keeps both 115200 and 921600 baud well inside the 1.5 % error budget.
+
+## Repository layout
+
+```
+src/app/        Boot flow: main, slot selection, update, hand-over, swap_jump.S
+src/bsp/        STM32F7 board support: clock, flash, uart3, iwdg, HardFault
+src/common/     Hardware-independent: boot_layout.h, crc32, image, metadata
+src/protocol/   HWLINK codec/server, flatcc port, generated FlatBuffers headers
+board/          HAL configuration and board pin map
+ld/             Linker script (bank 1 sectors 0-1, 32 KB)
+protocol/       HWLINK FlatBuffers schema (hwlink.fbs)
+tools/          Host tools: bootctl.py, mkimage.py, provisioning
+scripts/        Build, Docker and serial helpers
+third_party/    Vendored flatcc runtime
+docker/         stm32-dev build environment
+```
+
+`src/README.md` describes the layering rules and how to add a module.
 
 ## Build and flash
 
@@ -150,7 +168,7 @@ out of scope for v0.1.
 
 `third_party/flatcc` is the Apache-2.0 flatcc 0.6.1 runtime, used as released.
 `tools/vendor/flatbuffers` is the Apache-2.0 Python FlatBuffers runtime used
-by `bootctl.py`.  The C headers in `src/generated` and the Python package in
+by `bootctl.py`.  The C headers in `src/protocol/generated` and the Python package in
 `tools/generated` are generated from `protocol/hwlink.fbs`.  STM32CubeF7 is
 fetched by the Docker image and keeps its own licence.
 

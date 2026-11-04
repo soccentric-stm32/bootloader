@@ -5,7 +5,7 @@
 # 4-space indent, ~80-column wrapping with aligned assignments and trailing
 # comments.
 #
-# Run with:  clang-format -i src/*.c src/*.h board/**/*.c board/**/*.h
+# Run with:  clang-format -i src/**/*.c src/**/*.h board/**/*.c board/**/*.h
 # (use "make format" once wired into the Makefile)
 #
 ---
