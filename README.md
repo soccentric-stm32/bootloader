@@ -1,240 +1,55 @@
 # bootloader
 
-Bare-metal A/B bootloader for the NUCLEO-F767ZI (STM32F767ZI). Dual-bank flash
-with one application slot per bank, image updates over the ST-LINK VCP using
-the HWLINK protocol, CRC32 integrity checks, and trial boot with automatic
-rollback.
+A bare-metal A/B bootloader for the NUCLEO-F767ZI (STM32F767ZI). It uses the dual-bank flash of the STM32F7 to hold two application slots, receives new images over the ST-LINK virtual COM port using the HWLINK protocol, checks every image with CRC32 and boots a new image on trial. If the application does not confirm itself within three starts, the bootloader rolls back to the last confirmed slot automatically. Host tools for building images, updating devices and factory provisioning are included, together with host and protocol tests. It is the foundation every application in this project family runs on.
 
-| | |
-|---|---|
-| Requirements | [SRS.md](SRS.md) — SRS-BOOT-F767 (v0.1) |
-| Board | NUCLEO-F767ZI — see [Hardware.md](https://github.com/soccentric-stm32/validation-firmware/blob/HEAD/Hardware.md) |
-| Status | Feature complete for v0.1: clock tree, USART3 + HWLINK server, image/header CRC32, metadata and A/B selection, bank swap, trial boot + IWDG + rollback, persistent trial records, `BootInfo` (protocol minor 2) and the host tools |
-| Build environment | [docker/README.md](docker/README.md): same `stm32-dev` image as the validation firmware (STM32CubeF7 v1.17.4, arm-none-eabi-gcc 13.2) |
+## Features
 
-## Flash layout (dual bank, `nDBANK = 0`)
+- Dual-bank A/B layout: 32 KB bootloader, 16 KB metadata and a 976 KB slot per bank
+- Same application binary runs from either slot through the bank-swap remap
+- Image updates over UART with the HWLINK protocol (COBS, CRC-32, FlatBuffers)
+- 115200 baud by default, 921600 baud on request within a session
+- CRC32 check of the image header and of the slot contents read back from flash
+- Trial boot with an IWDG watchdog and automatic rollback after three failed starts
+- Append-only, power-loss-safe metadata records (VERIFIED, ACTIVATED, CONFIRMED, REJECTED, TRIAL)
+- Lazy sector erase so only the sectors an update touches are erased
+- 500 ms HWLINK listen window at reset; B1 button forces update mode
+- `GetBootInfo` reports both slots, the active slot and rollback state
+- 216 MHz clock tree from the ST-LINK MCO
+- About 28 KB of flash; the build fails if it outgrows 32 KB
+- Never writes option bytes, OTP, protection or its own sectors
+- `bootctl.py` host tool: info, update, activate, enter, wait, reset, set-baud, JSON output
+- `mkimage.py`: image wrapping, inspection, metadata sectors and combined factory HEX
+- `provision.sh`: option bytes, mass erase and bootloader programming over SWD
+- Host C tests against a simulated 2 MB flash
+- Python tests including a simulated bootloader on a pseudo-terminal
+- Layout, schema and protocol consistency checks
+- Optional hardware-in-the-loop CI stage with a rollback test
+- Reproducible Docker build environment
 
-| Region | Bank 1 | Bank 2 | Size |
-|---|---|---|---|
-| BOOT | `0x0800 0000`–`0x0800 7FFF` | reserved `0x0810 0000`–`0x0810 7FFF` | 32 KB |
-| Metadata | `0x0800 8000`–`0x0800 BFFF` | `0x0810 8000`–`0x0810 BFFF` | 16 KB |
-| Application slot A / B | `0x0800 C000`–`0x080F FFFF` | `0x0810 C000`–`0x081F FFFF` | 976 KB |
-
-Slot A is in bank 1, slot B in bank 2.  The same application binary runs from
-either slot: BOOT maps the active bank to `0x0800 0000` with
-`SYSCFG_MEMRMP.SWP_FB` and jumps to `0x0800 C000`.  The swap and jump routine
-runs from DTCM (`src/app/swap_jump.S`) because the swap remaps the bank BOOT
-itself executes from.
-
-The metadata sector is append-only.  Each record is 32 bytes: magic, one
-value word, zeros and a CRC32 of the first 28 bytes.  The header (256 bytes)
-is followed by `VERIFIED`, `ACTIVATED`, `CONFIRMED`, `REJECTED` and up to
-eight `TRIAL` records; see SRS Appendix B.  The trial records make the trial
-counter survive a power loss.  A torn or erased record fails its CRC and is
-treated as absent.
-
-BOOT itself uses 60 KB of DTCM (code, stack, message buffers, flatcc arena)
-and a 4 KB USART3 receive ring in SRAM1.  The ring must not be in DTCM: DMA
-cannot access the tightly coupled memory on the STM32F7.
-
-## Clock tree
-
-BOOT runs at 216 MHz from the 8 MHz ST-LINK MCO (HSE bypass, PLLN = 432,
-PLLP = 2, over-drive, 7 flash wait states).  USART3 is on APB1 at 54 MHz,
-which keeps both 115200 and 921600 baud well inside the 1.5 % error budget.
-
-## Repository layout
-
-```
-src/app/        Boot flow: main, slot selection, update, hand-over, swap_jump.S
-src/bsp/        STM32F7 board support: clock, flash, uart3, iwdg, HardFault
-src/common/     Hardware-independent: boot_layout.h, crc32, image, metadata
-src/protocol/   HWLINK codec/server, flatcc port, generated FlatBuffers headers
-board/          HAL configuration and board pin map
-ld/             Linker script (bank 1 sectors 0-1, 32 KB)
-protocol/       HWLINK FlatBuffers schema (hwlink.fbs)
-tools/          Host tools: bootctl.py, mkimage.py, provisioning, GUI
-  gui/          GUI device model and sequential process runner
-tests/          Host C tests and Python protocol tests
-scripts/        Build, Docker and serial helpers
-third_party/    Vendored flatcc runtime
-docker/         stm32-dev build environment
-```
-
-`src/README.md` describes the layering rules and how to add a module.
-
-## Build and flash
-
-Everything runs in the `stm32-dev` container through `scripts/docker-dev.sh`:
+## Build and run
 
 ```bash
-scripts/build.sh            # cmake configure + ninja build (in the container)
-scripts/build.sh clean      # from scratch
-make flash                  # flash build/boot.elf over SWD, verify, reset
-make gui                    # PySide6 flash GUI (make gui-deps once)
-make help                   # all targets (lint, debug, serial, ...)
+scripts/build.sh                                   # build inside the stm32-dev container
+make flash                                         # flash build/boot.elf over SWD
+make test                                          # host, Python and contract tests
+tools/bootctl.py update app.img --activate --wait  # update an application over UART
 ```
-
-Outputs in `build/`: `boot.elf`, `boot.bin`, `boot.hex`, `boot.map`.  `make
-flash` puts BOOT at `0x08000000`.  The build fails if BOOT grows past
-`0x0800 7FFF`; the current image is about 28 KB of flash.
-
-## Product provisioning
-
-BOOT needs dual-bank mode and dual boot disabled.  The GUI does the same over
-SWD in production; for CI and manual bring-up:
-
-```bash
-tools/provision.sh                     # option bytes + mass erase + BOOT
-tools/provision.sh --no-options ...    # option bytes already set
-```
-
-`tools/provision.sh` runs OpenOCD in the `stm32-dev` container.  Changing
-`nDBANK` forces a mass erase, so it erases the whole flash before programming
-BOOT.  If the OpenOCD version on the bench cannot write the F767 option bytes
-(SRS OPEN-B05), set `nDBANK = 0` and `nDBOOT = 1` with STM32CubeProgrammer and
-rerun with `--no-options`.
-
-## Update workflow
-
-1. Build the application, linked at `0x0800 C000` (see the application
-   repositories), and wrap it into an image:
-
-   ```bash
-   tools/mkimage.py --input build/app.bin --output build/app.img \
-       --version 0.1.0 --commit <sha> --timestamp <unix> \
-       --name stm32-application
-   tools/mkimage.py --inspect build/app.img
-   ```
-
-2. Flash BOOT over SWD, then update over the ST-LINK VCP:
-
-   ```bash
-   pip install pyserial        # only host dependency; flatbuffers is vendored
-   tools/bootctl.py info
-   tools/bootctl.py update build/app.img --activate --wait
-   tools/bootctl.py update build/app.img --both --json
-   tools/bootctl.py enter          # running application -> BOOT
-   tools/bootctl.py reset
-   ```
-
-   `bootctl.py` implements `info`, `update`, `activate`, `enter`, `wait`,
-   `reset` and `set-baud` over HWLINK.  If the application is running, the
-   tool sends `EnterBootloader` and reopens the port automatically
-   (`--no-enter` disables this).  `update --both` updates and activates the
-   slot BOOT reports as the target, waits for the application to confirm the
-   trial, enters BOOT again and repeats for the other slot; `--a IMG --b IMG`
-   supplies different images.  Every command accepts `--json` for one JSON
-   object per line.  Add `--fast` to switch to 921600 inside the same session
-   (BOOT always starts at 115200).
-
-3. Factory provisioning can pre-build both metadata sectors and one combined
-   Intel HEX file:
-
-   ```bash
-   tools/mkimage.py --image build/app.img --metadata A \
-       --output build/meta_a.bin
-   tools/mkimage.py --factory-hex build/factory.hex --boot build/boot.hex \
-       --slot-a build/app_a.img --slot-b build/app_b.img
-   openocd -f board/st_nucleo_f7.cfg -c "program build/factory.hex verify reset exit"
-   # or, in one provisioning pass (option bytes + mass erase + factory HEX):
-   tools/provision.sh build/factory.hex
-   ```
-
-## Tests
-
-```bash
-make test-host       # C tests with a fake 2 MB flash and backup registers
-make test-python     # bootctl/mkimage tests, including a simulated BOOT on a pty
-make test-contract   # layout/schema/protocol-minor consistency
-make test            # all of the above
-```
-
-Jenkins also has an optional `RUN_HIL` stage.  It provisions a bench
-NUCLEO, flashes BOOT, runs `bootctl update --both --a A --b B`, then loads
-a vector-table-only bad image and verifies that the trial limit rolls back
-to the confirmed slot.  Supply `HIL_IMAGE_A`/`HIL_IMAGE_B` from the real
-application build.  A true supply power-cycle during an update remains a
-manual bench step; a reset during an update exercises the same flash
-metadata path and can be done with `scripts/docker-dev.sh reset`.
-
-3. On reset BOOT listens for 500 ms for a HWLINK `Hello` ([ENT-001]), then
-   boots the valid slot with the highest activation sequence number.  B1
-   held at reset, a `EnterBootloader` request from the application, or no
-   valid slot keeps it in update mode.
-
-An update writes only the inactive slot.  Slot sectors are erased lazily when
-the first chunk that falls into them arrives (128 KB sector erase can take up
-to about 2 s).  `UpdateEnd` verifies the vector table and the CRC32 of the
-slot contents read back from flash before writing `VERIFIED`.  `Activate`
-writes `ACTIVATED` with the next sequence number, resets, and the new image
-boots on trial.
-
-### Trial boot and rollback
-
-A pending image is counted in `RTC_BKP0R` before every hand-over.  After three
-failed starts the next boot writes `REJECTED` and selects the other slot.
-BOOT starts the IWDG with a 4 s timeout, so a hung application resets and
-counts as a failed trial.  The rollback is reported in `GetBootInfo` as
-`ROLLED_BACK` with the rejected slot until the next successful `Activate`.
-The application confirms itself by programming the `CONFIRMED` record in its
-own metadata sector (now visible at `0x0800 8000` because of the bank swap).
-
-## Recovery
-
-Recovery is always over SWD: `make erase` erases the whole flash,
-`make flash` writes BOOT again, and the application images can be fetched
-from the GUI or rebuilt.  BOOT never writes option bytes, OTP, read/write
-protection or its own sectors.
-
-## Security note
-
-Integrity is protected by CRC32 only.  BOOT does **not** authenticate images:
-anyone with access to the UART can load an image (SRS BSAFE-006).  Signing is
-out of scope for v0.1.
 
 ## Related projects
 
-| Repository | Role |
-|---|---|
-| [validation-firmware](https://github.com/soccentric-stm32/validation-firmware) | HWVAL hardware validation firmware |
-| [bootloader](https://github.com/soccentric-stm32/bootloader) | A/B bootloader (UART update, CRC32, trial boot and rollback) |
-| [app-c-freertos](https://github.com/soccentric-stm32/app-c-freertos) | FreeRTOS demo application in C (LEDs, button, HWLINK) |
-| [app-rust-freertos](https://github.com/soccentric-stm32/app-rust-freertos) | The same demo in Rust (Embassy) |
-| [app-c-zephyr](https://github.com/soccentric-stm32/app-c-zephyr) | The same demo on Zephyr RTOS |
-| [app-rust-zephyr](https://github.com/soccentric-stm32/app-rust-zephyr) | The same demo in Rust on Zephyr RTOS |
-| [validation-gui](https://github.com/soccentric-stm32/validation-gui) | PySide6 GUI: runs HWVAL tests, updates and flashes firmware |
-| [factory-station](https://github.com/soccentric-stm32/factory-station) | HWVAL Factory: end-of-line test and provisioning station |
-
-## Third-party code
-
-`third_party/flatcc` is the Apache-2.0 flatcc 0.6.1 runtime, used as released.
-`tools/vendor/flatbuffers` is the Apache-2.0 Python FlatBuffers runtime used
-by `bootctl.py`.  The C headers in `src/protocol/generated` and the Python package in
-`tools/generated` are generated from `protocol/hwlink.fbs`.  STM32CubeF7 is
-fetched by the Docker image and keeps its own licence.
-
-## CI and releases
-
-The [Jenkinsfile](Jenkinsfile) runs the build and checks, then **Package**
-builds `dist/bootloader-<version>.tar.gz` with the outputs, a `manifest.json`
-(version, commit, build) and `SHA256SUMS`, and archives `dist/`. For a tag
-`v<version>`, **Release** publishes `dist/` as a GitHub release
-(`ci/github_release.py`, Jenkins credential `github-release-token`); the tag
-must match the version the build reports (`ci/version.sh`), and 0.x versions
-are marked as pre-releases.
-
-To release, bump the version (`BOOT_VERSION` in `CMakeLists.txt`), push it, then push a matching tag:
-
-```bash
-git tag v0.2.0
-git push origin v0.2.0
-```
+- [app-c-freertos](https://github.com/soccentric-stm32/app-c-freertos) — Demo application in C on FreeRTOS
+- [app-c-zephyr](https://github.com/soccentric-stm32/app-c-zephyr) — Demo application in C on Zephyr RTOS
+- [app-rust-freertos](https://github.com/soccentric-stm32/app-rust-freertos) — Demo application in Rust on Embassy
+- [app-rust-zephyr](https://github.com/soccentric-stm32/app-rust-zephyr) — Demo application in Rust on Zephyr RTOS
+- [validation-firmware](https://github.com/soccentric-stm32/validation-firmware) — HWVAL hardware validation firmware
+- [validation-gui](https://github.com/soccentric-stm32/validation-gui) — HWVAL Studio: desktop GUI for tests, updates and flashing
+- [factory-station](https://github.com/soccentric-stm32/factory-station) — HWVAL Factory: end-of-line test and provisioning station
+- [soccentric-stm32.github.io](https://github.com/soccentric-stm32/soccentric-stm32.github.io) — Project website
 
 ## License
 
-[MIT](LICENSE) © 2026 Sandesh Ghimire. Use it as a starting point for your own
-products. Third-party code (STM32CubeF7, FreeRTOS, LwIP, Embassy, Zephyr and
-others) is fetched at build time and keeps its own licence.
+Released under the [MIT License](LICENSE) © 2026 Sandesh Ghimire. You are free
+to use, modify and ship it in your own products.
 
-Author: Sandesh Ghimire <sandesh@soccentric.com>
+Contributions are welcome. Fork the repository, make your change on a branch and
+open a pull request. Bug reports, ideas and improvements are all appreciated.
