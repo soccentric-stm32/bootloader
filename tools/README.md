@@ -3,7 +3,7 @@
 | Tool | Purpose |
 |---|---|
 | `mkimage.py` | Wrap an application `.bin` in the 256-byte BOOT image header (`--key` signs it, BSAFE-006); `--sign` signs an existing image; `--inspect [--key]` checks an image file and its signature; `--genkey` and `--export-pubkey` manage signing keys; `--metadata` builds a 16 KB metadata sector and `--factory-hex` combines BOOT + A/B + metadata (P1-4). |
-| `bootctl.py` | HWLINK command-line updater: `info`, `update` (`--both`, `--a/--b`, `--json`), `activate`, `enter`, `wait`, `reset`, `set-baud`. |
+| `bootctl.py` | HWLINK command-line updater: `info`, `update` (`--both`, `--a/--b`, `--json`), `activate`, `enter`, `wait`, `catch`, `reset`, `set-baud`. |
 | `check_contracts.py` | Cross-check layout constants, generated schema and an application repo's `boot_contract.h`/`hwlink.fbs`. |
 | `package_hwlink.py` | Publish the canonical `hwlink.fbs`, generated Python package, `mkimage.py`, `boot_layout.h` and vendored runtime bundle (P3-8). |
 | `gui/` | The flash GUI: `window.py` (main window), `pages.py` (bootloader and project pages), `projects.py` (the five firmware projects), `runner.py` (job queue), `device.py` (BootInfo, port discovery), `widgets.py`, `theme.py`, `icons.py`. |
@@ -67,6 +67,14 @@ Before flashing, the page warns if the key differs from the one BOOT
 trusts, or if the counter is below the floor or would raise it.  Each step
 also runs on its own.  **More** has Pull, Open folder, Enter bootloader and
 Reset.
+
+**Board ▸ Recover Board into BOOT** reaches BOOT when the running
+application does not answer HWLINK (HWVAL while it runs its test suite):
+`bootctl catch` keeps sending Hello while the board is reset over SWD, so
+one lands in BOOT's 500 ms listen window.  When the active slot is still on
+trial, BOOT will not activate a new image; the GUI offers to reset the board
+so the trial ends (the image confirms, or BOOT rejects it after three
+starts), and stays off the serial port meanwhile.
 
 ```sh
 make gui-deps       # one-time: PySide6, pyserial, cryptography

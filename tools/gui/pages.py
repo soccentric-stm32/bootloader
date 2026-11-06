@@ -37,6 +37,9 @@ BOOTCTL = ROOT / "tools" / "bootctl.py"
 PROVISION = ROOT / "tools" / "provision.sh"
 BOOT_ADDRESS = "0x08000000"
 BOOT_SUFFIXES = (".elf", ".hex", ".bin")
+# Three trial starts, each ended by the 4 s IWDG after BOOT's signature
+# check, plus margin (SRS TRY-003, TRY-004).  Measured: about 25 s.
+TRIAL_SETTLE_S = 30
 GIT_ENV = {"GIT_TERMINAL_PROMPT": "0",
            "GIT_SSH_COMMAND": "ssh -o BatchMode=yes"}
 
@@ -772,7 +775,7 @@ class FirmwarePage(Page):
             if "sign" not in steps and not signed.is_file():
                 raise RuntimeError(f"{signed.name} does not exist. Sign the "
                                    "image first.")
-            if not self._confirm_flash():
+            if not self._trial_clear() or not self._confirm_flash():
                 return [], steps
             command = ["--port", port, "--baud", self.host.baud(),
                        "--verbose", "update", str(signed), "--json"]
@@ -798,6 +801,34 @@ class FirmwarePage(Page):
         args = projects.sign_args(image, key, signed, self.counter())
         job.display = projects.display_command("mkimage.py", args[1:])
         return args
+
+    def _trial_clear(self) -> bool:
+        """BOOT will not activate anything while the active slot is on trial.
+
+        The trial ends when that image confirms itself or fails three
+        starts, so offer to reset the board and let it run.
+        """
+        board = self.host.board
+        if self.host.waiting_for_trial():
+            self.host.error("Board busy", "BOOT is still finishing the "
+                            "previous image's trial. Flash again when the "
+                            "Board panel has refreshed.")
+            return False
+        if not board.active_pending:
+            return True
+        name = f" ({board.active_name})" if board.active_name else ""
+        if self.host.confirm(
+                "Active slot is still on trial",
+                f"Slot {board.active_slot}{name} was activated but has not "
+                "confirmed itself. BOOT will not activate a new image until "
+                "that trial ends.\n\nReset the board to let it run: it "
+                "either confirms, or BOOT rejects it after three failed "
+                f"starts (about {TRIAL_SETTLE_S} s). Then flash again.",
+                "Reset Board"):
+            self.host.serial_command("reset", "Resetting the board to end "
+                                     "the trial…")
+            self.host.refresh_board_later(TRIAL_SETTLE_S * 1000)
+        return False
 
     def _confirm_flash(self) -> bool:
         board = self.host.board
@@ -843,6 +874,10 @@ class FirmwarePage(Page):
         self.host.serial_command("reset", "Resetting the board…")
 
     def run_finished(self, failed: bool) -> None:
+        if not failed and self.stepper.states.get("flash") == "done" and \
+                self.activate_switch.isChecked():
+            # bootctl --wait returned, so the new image confirmed itself.
+            self.host.board.active_pending = False
         self.refresh_image()
         self.refresh_signing()
         cloned = self.cloned()

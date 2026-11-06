@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import sys
 import time
 from dataclasses import dataclass
@@ -44,7 +45,15 @@ from PySide6.QtWidgets import (
 
 from . import icons, projects, theme
 from .device import parse_boot_info, stlink_ports
-from .pages import BOOTCTL, ROOT, BootloaderPage, FirmwarePage, Page, badge_pixmap
+from .pages import (
+    BOOTCTL,
+    DEV_SCRIPT,
+    ROOT,
+    BootloaderPage,
+    FirmwarePage,
+    Page,
+    badge_pixmap,
+)
 from .runner import Job, Runner
 from .widgets import ElidedLabel, NavItem, label, set_tone
 
@@ -65,6 +74,8 @@ class BoardState:
     flash_mode: str = ""
     key_id: str = ""
     security_floor: int | None = None
+    active_pending: bool = False  # active slot on trial, not confirmed yet
+    active_name: str = ""
 
 
 class MainWindow(QMainWindow):
@@ -75,6 +86,7 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("soccentric", "boot-flasher")
         self.board = BoardState()
         self.run_page: Page | None = None
+        self._quiet_until = 0.0
         self._step_started: dict[str, float] = {}
         self._run_failed = False
 
@@ -367,12 +379,18 @@ class MainWindow(QMainWindow):
         enter_action = QAction("Enter Bootloader", self)
         enter_action.triggered.connect(self.enter_boot)
         board_menu.addAction(enter_action)
+        recover_action = QAction("Recover Board into BOOT", self)
+        recover_action.setToolTip("Reset over SWD and catch BOOT's listen "
+                                  "window; for an application that does "
+                                  "not answer HWLINK")
+        recover_action.triggered.connect(self.recover_board)
+        board_menu.addAction(recover_action)
         reset_action = QAction("Reset Board", self)
         reset_action.setShortcut(QKeySequence("Ctrl+R"))
         reset_action.triggered.connect(
             lambda: self.current_page().reset_board())
         board_menu.addAction(reset_action)
-        self.board_actions = [enter_action, reset_action]
+        self.board_actions = [enter_action, recover_action, reset_action]
 
         help_menu = bar.addMenu("&Help")
         guide_action = QAction("Image Signing Guide", self)
@@ -525,8 +543,18 @@ class MainWindow(QMainWindow):
             self.console_status.setText(
                 f"{operation} {event.get('done', 0)} / {event.get('total', 0)}")
         elif kind == "error":
-            self.console_status.setText(str(event.get("error", "error")))
+            message = str(event.get("error", "error"))
+            self.console_status.setText(message)
             set_tone(self.console_status, "danger")
+            if "timeout waiting for reply" in message:
+                self._append("hint: nothing answers HWLINK.  If the "
+                             "application does not speak HWLINK (or is "
+                             "busy), use Board > Recover Board into BOOT.")
+            if "on trial" in message:
+                self.board.active_pending = True
+                self._append("hint: the active slot has not confirmed its "
+                             "trial.  Flash again and choose Reset Board to "
+                             "let BOOT finish the trial first.")
         elif kind in ("stage", "result", "confirm"):
             self.console_status.setText(str(event.get("status",
                                                       event.get("state", ""))))
@@ -538,6 +566,9 @@ class MainWindow(QMainWindow):
         if at_end:
             self.console.moveCursor(QTextCursor.End)
             bar.setValue(bar.maximum())
+            # Moving the cursor to the end scrolls long lines sideways;
+            # keep the start of every line in view.
+            self.console.horizontalScrollBar().setValue(0)
 
     def console_line(self, text: str) -> None:
         self._append(text)
@@ -596,10 +627,27 @@ class MainWindow(QMainWindow):
         if self.port():
             self.info_timer.start()
 
+    def refresh_board_later(self, ms: int) -> None:
+        """Read the board once after `ms`, and not before.
+
+        A Hello inside BOOT's 500 ms listen window (ENT-001) keeps BOOT in
+        update mode, which would stop a trial from being counted.
+        """
+        self._quiet_until = time.monotonic() + ms / 1000
+        self.board_line1.setText("Waiting for the trial to end…")
+        set_tone(self.board_line1, "")
+        self.board_line2.setText("leave the board alone for "
+                                 f"{ms // 1000} s")
+        QTimer.singleShot(ms + 100, self.refresh_board)
+
+    def waiting_for_trial(self) -> bool:
+        return time.monotonic() < self._quiet_until
+
     def refresh_board(self) -> None:
         port = self.port()
         if not port or self.busy() or \
-                self.info_process.state() != QProcess.NotRunning:
+                self.info_process.state() != QProcess.NotRunning or \
+                time.monotonic() < self._quiet_until:
             return
         self.board_line1.setText("Reading board…")
         set_tone(self.board_line1, "")
@@ -639,11 +687,18 @@ class MainWindow(QMainWindow):
         view = parse_boot_info(data) if isinstance(data, dict) else None
         if view is None:
             return False
+        active = next((slot for slot in view.slots
+                       if slot.slot == view.active_slot), None)
+        names = {item.get("slot"): item.get("name", "")
+                 for item in data.get("slots", []) if isinstance(item, dict)}
         self.board = BoardState(
             connected=True, boot_version=view.boot_version,
             active_slot=view.active_slot, target_slot=view.target_slot,
             flash_mode=view.flash_mode, key_id=view.key_id,
-            security_floor=view.security_floor)
+            security_floor=view.security_floor,
+            active_pending=bool(active and active.pending and
+                                not active.confirmed),
+            active_name=str(names.get(view.active_slot, "") or ""))
         self._show_board()
         return True
 
@@ -661,12 +716,17 @@ class MainWindow(QMainWindow):
             self.board_line2.setText("")
         elif board.connected:
             single = board.flash_mode and board.flash_mode != "DUAL_BANK"
-            self.board_pill.setText("Single bank" if single else "Connected")
-            set_tone(self.board_pill, "warning" if single else "success")
+            self.board_pill.setText("Single bank" if single else
+                                    "On trial" if board.active_pending
+                                    else "Connected")
+            set_tone(self.board_pill, "warning" if single or
+                     board.active_pending else "success")
             parts = [f"BOOT {board.boot_version}" if board.boot_version
                      else "BOOT"]
             if board.active_slot:
-                parts.append(f"slot {board.active_slot} active")
+                parts.append(f"slot {board.active_slot} " +
+                             ("on trial" if board.active_pending
+                              else "active"))
             if board.target_slot:
                 parts.append(f"next {board.target_slot}")
             self.board_line1.setText(" · ".join(parts))
@@ -724,6 +784,45 @@ class MainWindow(QMainWindow):
 
     def enter_boot(self) -> None:
         self.serial_command("enter", "Switching the board to BOOT…")
+
+    def recover_board(self) -> None:
+        """Reach BOOT when the running application does not answer HWLINK.
+
+        bootctl keeps resending Hello while the board is reset over SWD, so
+        one lands in BOOT's 500 ms listen window (ENT-001) and BOOT stays
+        in update mode.
+        """
+        port = self.port()
+        if not port:
+            self.error("Board", "Choose the board's serial port in the "
+                       "sidebar first.")
+            return
+        if self.busy():
+            return
+        boot_page = self.pages[0]
+        if boot_page.container_switch.isChecked():
+            reset = f"{shlex.quote(str(DEV_SCRIPT))} reset"
+        else:
+            reset = (f"openocd -f {shlex.quote(self.openocd_cfg())} "
+                     "-c 'init; reset run; exit'")
+        script = (
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(BOOTCTL))} "
+            f"--port {shlex.quote(port)} --no-enter catch --for 20 --json"
+            " > \"$out\" 2>&1 & pid=$!; sleep 0.5; "
+            f"{reset} >/dev/null 2>&1; wait $pid; rc=$?; cat \"$out\"; "
+            "exit $rc")
+        job = Job("recover", "bash",
+                  ["-c", 'out=$(mktemp); trap \'rm -f "$out"\' EXIT; ' + script],
+                  "Resetting over SWD and catching BOOT…", ROOT,
+                  "bootctl catch --for 20 + SWD reset",
+                  capture=True, done=self._recovered)
+        self.run(self.current_page(), [job], [])
+
+    def _recovered(self, text: str) -> None:
+        if not self.absorb_board_json(text):
+            raise RuntimeError("BOOT did not answer during the reset")
+        self._append("BOOT caught in update mode; it boots the active slot "
+                     "after 120 s without traffic, or on Reset Board.")
 
     # ---- dialogs --------------------------------------------------------
 
