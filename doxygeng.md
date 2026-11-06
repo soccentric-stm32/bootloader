@@ -40,8 +40,8 @@ project-owned `.c` / `.h` file. One file per commit, each commit pushed.
 
 ### src/common/
 - [ ] `src/common/boot_layout.h`
-- [ ] `src/common/crc32.c`
-- [ ] `src/common/crc32.h`
+- [x] `src/common/crc32.c`
+- [x] `src/common/crc32.h`
 - [ ] `src/common/image.c`
 - [ ] `src/common/image.h`
 - [ ] `src/common/metadata.c`
