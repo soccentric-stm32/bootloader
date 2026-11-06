@@ -1,15 +1,26 @@
-/*
- * flash.c - guarded flash wrapper
+/**
+ * @file    flash.c
+ * @brief   Guarded flash wrapper implementation.
  *
- * Author:  Sandesh Ghimire <sandesh@soccentric.com>
- * Date:    2026-11-03
- * Target:  STM32F767ZIT6, dual-bank flash
- * SRS:     LAY-004, SWP-003, BSAFE-001..004, UPD-002/003/005
+ * @details
+ * Invariants the rest of BOOT may rely on:
  *
- * Nothing in this file unlocks the option bytes or touches OTP.  Erase and
- * program are accepted only for the inactive slot and the inactive bank's
- * metadata sector, except for the CONFIRMED and REJECTED records which may
- * be programmed in either metadata sector (BSAFE-003).
+ * - No option-byte change, no OTP write, no bank-swap write anywhere in
+ *   this file.
+ * - Erase/program are accepted only for the update target slot and its
+ *   metadata sector, **plus** the CONFIRMED / REJECTED / TRIAL records
+ *   in the other (active) slot (BSAFE-003, P2-6).
+ * - Every programmed word is read back and compared before the call
+ *   returns success.
+ * - The factory identity sector (bank 2 sector 13, A-01) is refused by
+ *   the sector-erase helper no matter what the caller asks for.
+ * - Flash erase can take seconds; the IWDG is kicked around erase
+ *   boundaries so a legitimate erase cannot trip the watchdog.
+ *
+ * @author  Sandesh Ghimire <sandesh@soccentric.com>
+ * @date    2026-11-03
+ * @target  STM32F767ZIT6, dual-bank flash
+ * @srs     LAY-004, SWP-003, BSAFE-001..004, UPD-002/003/005
  */
 
 #include "stm32f7xx_hal.h"
@@ -17,26 +28,55 @@
 #include "flash.h"
 #include "iwdg.h"
 
+/**
+ * @name Module-private state.
+ * @brief The module's own view of the current selection, shared with
+ *        the update flow through the three `boot_flash_*` accessors.
+ * @{
+ */
+
+/** Current active slot (A/B), as published by the selection module. */
 static boot_slot_t g_active_slot = BOOT_SLOT_A;
+
+/** Whether @ref g_active_slot actually holds a bootable image. */
 static bool g_active_valid;
+
+/** Gate: `false` forbids all erase/program (BSAFE-005, see file header). */
 static bool g_flash_allowed;
 
+/** @} */
+
+/** @brief See @ref boot_flash_set_allowed. */
 void boot_flash_set_allowed(bool allowed)
 {
     g_flash_allowed = allowed;
 }
 
+/** @brief See @ref boot_flash_set_active. */
 void boot_flash_set_active(boot_slot_t slot, bool valid)
 {
     g_active_slot  = slot;
     g_active_valid = valid;
 }
 
+/** @brief See @ref boot_flash_target_slot.
+ *         The inactive slot when a valid image is in flight; slot A when
+ *         the selection is empty (fresh-install case, UPD-001). */
 boot_slot_t boot_flash_target_slot(void)
 {
     return g_active_valid ? boot_other_slot(g_active_slot) : BOOT_SLOT_A;
 }
 
+/**
+ * @brief   Check that [address, address+len) lies fully inside
+ *          [base, base+size) without overflow.
+ *
+ * @param[in] address  Start address (absolute).
+ * @param[in] len      Length in bytes (0 is a failure).
+ * @param[in] base     Base of the allowed window.
+ * @param[in] size     Size of the allowed window.
+ * @return  `true` when the range fits.
+ */
 static bool range_inside(uint32_t address, uint32_t len, uint32_t base,
                          uint32_t size)
 {
@@ -50,6 +90,14 @@ static bool range_inside(uint32_t address, uint32_t len, uint32_t base,
     return offset <= size && len <= (size - offset);
 }
 
+/**
+ * @brief   See @ref boot_flash_range_erased.  Reads from flash only; no
+ *          flash controller state is touched.
+ *
+ * @details Word-granularity check with a byte-granularity tail for the
+ *          range's final 1–3 bytes (keeps a non-4-aligned caller from
+ *          missing a partially-written byte at the tail).
+ */
 bool boot_flash_range_erased(uint32_t address, uint32_t len)
 {
     const volatile uint32_t *words = (const volatile uint32_t *)address;
@@ -68,6 +116,15 @@ bool boot_flash_range_erased(uint32_t address, uint32_t len)
     return true;
 }
 
+/**
+ * @brief   Unlock the flash controller and clear any stale status flags.
+ *
+ * @details Clears EOP + all error bits so a pre-existing failure (e.g.
+ *          a power glitch on a prior boot) does not poison the first
+ *          operation this boot.
+ *
+ * @return  `true` when the controller was unlocked successfully.
+ */
 static bool flash_begin(void)
 {
     if (HAL_FLASH_Unlock() != HAL_OK) {
@@ -77,11 +134,29 @@ static bool flash_begin(void)
     return true;
 }
 
+/**
+ * @brief   Lock the flash controller again (called on every exit path).
+ */
 static void flash_end(void)
 {
     (void)HAL_FLASH_Lock();
 }
 
+/**
+ * @brief   Erase a single flash sector by physical number.
+ *
+ * @details A-01 guard: the factory identity record (bank 2 sector 13,
+ *          `BOOT_IDENTITY_SECTOR`) can /never/ be erased - it is the
+ *          provisioning anchor and a corrupted provisioning record is
+ *          worse than a corrupted image (which can be updated).
+ *          All other sectors are erased at voltage range 3 (2.7–3.6 V
+ *          board, word programming).
+ *
+ * @param[in] sector  Physical sector number (0..11 in bank 1, 12..23
+ *                    in bank 2; the caller is responsible for the
+ *                    slot→sector mapping).
+ * @return  `true` on success.
+ */
 static bool erase_sector(uint32_t sector)
 {
     /* A-01: the factory identity record lives in bank 2 sector 13.  BOOT
@@ -101,6 +176,10 @@ static bool erase_sector(uint32_t sector)
     return HAL_FLASHEx_Erase(&erase, &error) == HAL_OK;
 }
 
+/**
+ * @brief   See @ref boot_flash_erase_meta.  Kicks the IWDG before and
+ *          after the (potentially multi-second) erase.
+ */
 bool boot_flash_erase_meta(boot_slot_t slot)
 {
     if (!g_flash_allowed || slot != boot_flash_target_slot()) {
@@ -117,6 +196,10 @@ bool boot_flash_erase_meta(boot_slot_t slot)
     return ok;
 }
 
+/**
+ * @brief   See @ref boot_flash_erase_slot_sector.  Kicks the IWDG before
+ *          and after the erase.
+ */
 bool boot_flash_erase_slot_sector(boot_slot_t slot, uint32_t index)
 {
     if (!g_flash_allowed || slot != boot_flash_target_slot() ||
@@ -133,6 +216,23 @@ bool boot_flash_erase_slot_sector(boot_slot_t slot, uint32_t index)
     return ok;
 }
 
+/**
+ * @brief   BSAFE-003 exception list for the *non-target* slot.
+ *
+ * @details The trial counter must be updated in the sector of the slot
+ *          that is actually booting - so CONFIRMED, REJECTED and the
+ *          P2-6 TRIAL records may be written into either metadata
+ *          sector.  Every other record (in particular the image header
+ *          and the VERIFIED/ACTIVATED records) is restricted to the
+ *          update target slot.
+ *
+ * @param[in] slot    Slot to receive the write.
+ * @param[in] offset  Metadata-sector offset.
+ * @param[in] len     Length in bytes.
+ * @return  `true` when the (slot, offset, len) triple is allowed.
+ *
+ * @srs     BSAFE-003, P2-6
+ */
 static bool meta_offset_allowed(boot_slot_t slot, uint32_t offset,
                                 uint32_t len)
 {
@@ -177,6 +277,11 @@ static bool meta_offset_allowed(boot_slot_t slot, uint32_t offset,
            trial_offset;
 }
 
+/**
+ * @brief   See @ref boot_flash_program_meta in flash.h.  Enforces
+ *          the append-only invariant (destination must be fully
+ *          erased) and verifies each word back from flash.
+ */
 bool boot_flash_program_meta(boot_slot_t slot, uint32_t offset,
                              const void *data, uint32_t len)
 {
@@ -210,6 +315,11 @@ bool boot_flash_program_meta(boot_slot_t slot, uint32_t offset,
     return ok;
 }
 
+/**
+ * @brief   See @ref boot_flash_program_slot in flash.h.  Programs each
+ *          32-bit word and reads it back; the first mismatch is
+ *          reported via @ref fail_addr.
+ */
 bool boot_flash_program_slot(boot_slot_t slot, uint32_t offset,
                              const void *data, uint32_t len,
                              uint32_t *fail_addr)
