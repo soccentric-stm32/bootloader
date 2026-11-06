@@ -549,6 +549,11 @@ def open_boot_link(port: str, baud: int, timeout: float) -> Link:
     raise LinkError("could not open BOOT")
 
 
+# After a Reset, stay off the port until BOOT's 500 ms listen window and its
+# image checks (about 1.2 s for a full slot) are over.
+BOOT_SETTLE_S = 2.0
+
+
 def wait_for_confirmation(port: str, baud: int, timeout: float,
                           expected_slot: str | None = None) -> dict:
     """P2-3: wait until the application confirms the freshly activated slot.
@@ -572,6 +577,20 @@ def wait_for_confirmation(port: str, baud: int, timeout: float,
                 if data["last_outcome"] == "ROLLED_BACK":
                     return {"state": "rolled_back", **data}
                 last = f"still in BOOT ({data['last_outcome']})"
+                active = next((s for s in data["slots"]
+                               if s["slot"] == data["active_slot"]), None)
+                if data["active_valid"] and active and active["pending"]:
+                    # ENT-001: this Hello reached BOOT inside its 500 ms
+                    # listen window after the reset, which keeps BOOT in
+                    # update mode before the trial starts.  Let it boot
+                    # the pending slot; no trial attempt was used.
+                    vprint("wait: caught BOOT's listen window; resetting "
+                           "so the pending slot boots")
+                    send_reset(link)
+                    link.close()
+                    link = None
+                    time.sleep(BOOT_SETTLE_S)
+                    continue
             else:
                 status = read_status(link)
                 slot = slot_name(status.Slot())
@@ -1051,16 +1070,50 @@ def cmd_activate(link: Link, args) -> int:
     return 0
 
 
-def cmd_reset(link: Link, _args) -> int:
-    link.hello()
+def send_reset(link: Link) -> None:
     builder = flatbuffers.Builder(32)
     Reset.ResetStart(builder)
     body = Reset.ResetEnd(builder)
     link.request(finish(builder, 10, body))
+
+
+def cmd_reset(link: Link, _args) -> int:
+    link.hello()
+    send_reset(link)
     if not JSON_OUT:
         print("Reset: ok")
     emit({"event": "result", "command": "reset", "status": "ok"})
     return 0
+
+
+# catch: Hello is resent this often, so one lands inside BOOT's 500 ms
+# listen window (ENT-001).
+CATCH_INTERVAL_S = 0.05
+
+
+def cmd_catch(link: Link, args) -> int:
+    """Keep sending Hello until BOOT answers, then show the boot info.
+
+    For an application that does not answer HWLINK: start this, then reset
+    the board (SWD, NRST or the reset button).  A Hello inside BOOT's
+    listen window keeps BOOT in update mode.
+    """
+    deadline = time.monotonic() + args.catch_timeout
+    while time.monotonic() < deadline:
+        try:
+            reply = link._hello_once(CATCH_INTERVAL_S)
+        except LinkError:
+            continue
+        if reply.Role() == Role.BOOTLOADER:
+            info = read_boot_info(link)
+            if JSON_OUT:
+                print(json.dumps(boot_info_dict(reply, info), indent=2))
+            else:
+                print(f"caught BOOT: active slot {slot_name(info.ActiveSlot())}"
+                      f", last outcome {outcome_name(info.LastOutcome())}")
+            return 0
+    raise LinkError(f"BOOT did not answer within {args.catch_timeout:g} s; "
+                    "reset the board while catch is running")
 
 
 def cmd_wait(link: Link, args) -> int:
@@ -1188,6 +1241,12 @@ def main() -> int:
                           help="wait for the application to confirm its trial")
     wait.add_argument("--wait-timeout", type=float, default=30.0)
     wait.add_argument("--json", action="store_true")
+    catch = sub.add_parser(
+        "catch", help="send Hello until BOOT answers; reset the board "
+                      "meanwhile (for an application without HWLINK)")
+    catch.add_argument("--for", dest="catch_timeout", type=float,
+                       default=15.0, help="seconds to keep trying (15)")
+    catch.add_argument("--json", action="store_true")
     reset = sub.add_parser("reset", help="leave BOOT and boot normally")
     reset.add_argument("--json", action="store_true")
     set_baud = sub.add_parser("set-baud", help="switch the link baud rate")
@@ -1232,6 +1291,7 @@ def main() -> int:
         "activate": cmd_activate,
         "enter": cmd_enter,
         "wait": cmd_wait,
+        "catch": cmd_catch,
         "reset": cmd_reset,
         "set-baud": cmd_set_baud,
     }

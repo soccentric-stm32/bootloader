@@ -32,7 +32,7 @@ import bootctl  # noqa: E402
 import mkimage  # noqa: E402
 import package_hwlink  # noqa: E402
 import check_contracts  # noqa: E402
-from hwlink import Ack, BootInfo, EnterBootloader, GetBootInfo, GetStatus, \
+from hwlink import Ack, BootInfo, BootSlotInfo, EnterBootloader, GetBootInfo, GetStatus, \
     HelloReply, Message, Nak, Status, UpdateBegin, UpdateData, UpdateEnd, \
     UpdateResult  # noqa: E402
 from hwlink.Error import Error  # noqa: E402
@@ -67,6 +67,8 @@ class FakeBoot(threading.Thread):
         self.drop_all_types: set[int] = set()
         self.expect_offset = 0
         self.begin_header: bytes | None = None
+        self.active_pending = False   # report the active slot on trial
+        self.resets = 0
 
     def run(self) -> None:
         while not self.stop.is_set():
@@ -140,7 +142,21 @@ class FakeBoot(threading.Thread):
         b = flatbuffers.Builder(256)
         ver = b.CreateString("0.2.0")
         build = b.CreateString("now")
+        slots = None
+        if self.active_pending:
+            BootSlotInfo.BootSlotInfoStart(b)
+            BootSlotInfo.BootSlotInfoAddSlot(
+                b, Slot.A if self.active == "A" else Slot.B)
+            BootSlotInfo.BootSlotInfoAddPresent(b, True)
+            BootSlotInfo.BootSlotInfoAddValid(b, True)
+            BootSlotInfo.BootSlotInfoAddPending(b, True)
+            slot = BootSlotInfo.BootSlotInfoEnd(b)
+            BootInfo.BootInfoStartSlotsVector(b, 1)
+            b.PrependUOffsetTRelative(slot)
+            slots = b.EndVector()
         BootInfo.BootInfoStart(b)
+        if slots is not None:
+            BootInfo.BootInfoAddSlots(b, slots)
         BootInfo.BootInfoAddActiveSlot(
             b, Slot.A if self.active == "A" else Slot.B)
         BootInfo.BootInfoAddLastOutcome(b, 1)
@@ -260,6 +276,12 @@ class FakeBoot(threading.Thread):
             return reply
         if body_type == 23:     # GetStatus
             return self._status(seq)
+        if body_type == 10:     # Reset: BOOT boots the active slot
+            self.resets += 1
+            if self.role == Role.BOOTLOADER and self.active_pending:
+                self.role = 3
+                self.active_pending = False
+            return self._ack(seq)
         return self._ack(seq)
 
 
@@ -395,6 +417,47 @@ def test_lost_activate_ack_is_success_pending():
         assert device.role != Role.BOOTLOADER
     finally:
         bootctl.ACTIVATE_TIMEOUT = old_timeout
+        device.stop.set()
+        device.join(timeout=2)
+
+
+def test_wait_releases_boot_caught_in_listen_window(monkeypatch):
+    """ENT-001: a --wait Hello inside BOOT's listen window parks BOOT in
+    update mode with the new slot still pending.  wait must reset BOOT so
+    the slot boots, instead of timing out with "still in BOOT"."""
+    monkeypatch.setattr(bootctl, "BOOT_SETTLE_S", 0.1, raising=False)
+    device = FakeBoot()
+    device.active_pending = True
+    device.start()
+    try:
+        result = bootctl.wait_for_confirmation(device.slave_name, 115200,
+                                               10.0)
+        assert result["state"] == "confirmed"
+        assert device.resets == 1
+    finally:
+        device.stop.set()
+        device.join(timeout=2)
+
+
+def test_catch_waits_until_boot_answers():
+    """catch keeps sending Hello through a reset until BOOT answers, and
+    never sends EnterBootloader to the application."""
+    device = FakeBoot()
+    device.role = 3          # application answering as itself
+    device.start()
+    threading.Timer(0.4, lambda: setattr(device, "role",
+                                         Role.BOOTLOADER)).start()
+    try:
+        link = bootctl.Link(device.slave_name, 115200, 1.0,
+                            auto_enter=False)
+        try:
+            code = bootctl.cmd_catch(link, argparse.Namespace(
+                catch_timeout=5.0))
+        finally:
+            link.close()
+        assert code == 0
+        assert device.role == Role.BOOTLOADER
+    finally:
         device.stop.set()
         device.join(timeout=2)
 
