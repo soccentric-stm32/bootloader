@@ -34,6 +34,7 @@
 #include "boot_layout.h"
 #include "clock.h"
 #include "handover.h"
+#include "debug_uart.h"
 #include "uart3.h"
 
 /**
@@ -120,6 +121,8 @@ void boot_handover(boot_slot_t slot)
      * for its timeout. */
     NVIC_DisableIRQ(DMA1_Stream1_IRQn);
     boot_uart3_deinit();
+    /* BDBG-001: drain the debug port and hand USART6 over untouched. */
+    boot_dbg_deinit();
 
     /* BGEN-008: all LEDs off at hand-over (GPIO clocks still on). */
     leds_off();

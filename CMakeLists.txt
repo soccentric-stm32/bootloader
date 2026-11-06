@@ -105,7 +105,18 @@ else()
     set(BOOT_SIGNED_IMAGES_VALUE 0)
 endif()
 
+# --- Debug output (BDBG-001) -------------------------------------------------
+# Text debug lines on USART6 (PG14, Arduino D1), 115200 8N1.  Costs well
+# under 1 KB of flash; turn it off for product builds.
+option(BOOT_DEBUG_UART "Debug text output on USART6 (BDBG-001)" ON)
+if(BOOT_DEBUG_UART)
+    set(BOOT_DEBUG_UART_VALUE 1)
+else()
+    set(BOOT_DEBUG_UART_VALUE 0)
+endif()
+
 add_compile_definitions(
+    BOOT_DEBUG_UART=${BOOT_DEBUG_UART_VALUE}
     BOOT_SIGNED_IMAGES=${BOOT_SIGNED_IMAGES_VALUE}
     # micro-ecc: verify on secp256r1 only, Cortex-M7 UMAAL assembly.
     uECC_SUPPORTS_secp160r1=0
@@ -186,6 +197,7 @@ set(BSP_SOURCES
     src/bsp/clock.c
     src/bsp/fault.c
     src/bsp/flash.c
+    src/bsp/debug_uart.c
     src/bsp/iwdg.c
     src/bsp/uart3.c)
 

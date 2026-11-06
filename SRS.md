@@ -438,6 +438,18 @@ repeated in each application SRS (e.g. [DEMO] §4).
 | BNFR-005 | **Code quality:** `-Wall -Wextra -Werror` and cppcheck with no high-severity findings, as for HWVAL. | I |
 | BNFR-006 | **Documentation:** a README shall describe the layout, provisioning, the boot flow and recovery over SWD. | I |
 
+### Debug output (USART6)
+
+USART3 carries HWLINK only.  Human-readable debug lines go to USART6 TX on
+PG14 (Arduino D1), 115200 8N1, in the line format shared by every firmware
+in the family: `[<ms>] <TAG> <E|W|I|D> <text>` (milliseconds since reset, right-aligned to 7 digits, CR LF).
+
+| ID | Requirement | Method |
+|---|---|---|
+| BDBG-001 | With the CMake option `BOOT_DEBUG_UART=ON` (the default), BOOT shall write the tag `BOOT` lines for: start (version, commit, `RCC_CSR`), the header status of each slot, the selection result, a trial-limit rejection, entering update mode, and the slot it boots. | D |
+| BDBG-002 | The debug output shall be TX only, register-level and polled, with every wait bounded; it shall not change the listen window (ENT-001), the update protocol or the boot decision. | I |
+| BDBG-003 | Before the hand-over BOOT shall drain USART6 and return USART6 and PG14 to their reset state (HND-001). With `BOOT_DEBUG_UART=OFF` every debug call shall compile to nothing, so the image equals one built without the feature; product builds should use OFF. | I |
+
 ---
 
 ## 14. Host-side tooling requirements

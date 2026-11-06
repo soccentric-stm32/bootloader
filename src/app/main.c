@@ -39,6 +39,7 @@
 #include "boot_board.h"
 #include "boot_layout.h"
 #include "clock.h"
+#include "debug_uart.h"
 #include "flash.h"
 #include "handover.h"
 #include "iwdg.h"
@@ -226,6 +227,46 @@ static void boot_rescan_and_choose(void)
     boot_flash_set_active(boot_selection.active, boot_selection.active_valid);
 }
 
+#if BOOT_DEBUG_UART
+/** BDBG-001: one debug line per slot, then the selection result. */
+static void boot_dbg_selection(void)
+{
+    static const char *const header_text[] = {
+        "ok", "bad format", "bad layout", "unsigned", "wrong key",
+        "bad signature"
+    };
+    for (uint32_t i = 0U; i < 2U; i++) {
+        const boot_slot_info_t *slot = &boot_selection.slot[i];
+        boot_dbg_begin(slot->header_valid || !slot->header_present ? 'I'
+                                                                   : 'W');
+        boot_dbg_str(i == 0U ? "slot A: " : "slot B: ");
+        if (!slot->header_present) {
+            boot_dbg_str("empty");
+        } else {
+            uint32_t status = (uint32_t)slot->header_status;
+            boot_dbg_str(status < 6U ? header_text[status] : "header error");
+            boot_dbg_str(slot->rejected ? ", rejected" :
+                         slot->confirmed ? ", confirmed" :
+                         slot->activated ? ", pending" : "");
+        }
+        boot_dbg_end();
+    }
+    boot_dbg_begin(boot_selection.active_valid ? 'I' : 'W');
+    if (boot_selection.active_valid) {
+        boot_dbg_str("sel: slot ");
+        boot_dbg_str(boot_selection.active == BOOT_SLOT_A ? "A" : "B");
+        boot_dbg_str(boot_selection.active_pending ? " on trial, count "
+                                                   : " confirmed, count ");
+        boot_dbg_dec(boot_selection.trial_count);
+    } else {
+        boot_dbg_str("sel: no bootable slot");
+    }
+    boot_dbg_end();
+}
+#else
+static inline void boot_dbg_selection(void) {}
+#endif
+
 /**
  * @brief   Bootloader entry point; runs the full reset flow.
  *
@@ -260,6 +301,13 @@ int main(void)
         boot_error_loop();
     }
 
+    /* BDBG-001: debug text on USART6; empty when BOOT_DEBUG_UART=0. */
+    boot_dbg_init();
+    boot_dbg_begin('I');
+    boot_dbg_str("start v" BOOT_VERSION_STR " " BOOT_GIT_COMMIT ", reset ");
+    boot_dbg_hex(RCC->CSR);
+    boot_dbg_end();
+
     /* No flash write is possible until the mode check has passed. */
     boot_flash_set_allowed(false);
     boot_update_reset(&boot_update);
@@ -271,6 +319,9 @@ int main(void)
     boot_rescan_and_choose();
 
     if (!boot_flash_is_dual_bank()) {
+        boot_dbg_begin('E');
+        boot_dbg_str("single-bank flash: run tools/provision.sh");
+        boot_dbg_end();
         boot_wrong_flash_mode();   /* does not return */
     }
     boot_flash_set_allowed(true);
@@ -291,6 +342,12 @@ int main(void)
                                      BOOT_REJECT_TRIAL_LIMIT);
         boot_rescan_and_choose();
     }
+    if (trial_limit_pending) {
+        boot_dbg_begin('W');
+        boot_dbg_str("trial limit reached: slot rejected");
+        boot_dbg_end();
+    }
+    boot_dbg_selection();
 
     /* TRY-006: a confirmed slot clears the trial counter. */
     if (boot_selection.active_valid && !boot_selection.active_pending) {
@@ -323,9 +380,13 @@ int main(void)
     if (force_update) {
         /* ENT-004: with no valid slot this never returns; Activate resets
          * the board.  Otherwise it returns after 120 s without traffic. */
+        boot_dbg_begin('I');
+        boot_dbg_str("update mode (HWLINK on USART3)");
+        boot_dbg_end();
         boot_proto_run(boot_selection.active_valid);
 
         boot_rescan_and_choose();
+        boot_dbg_selection();
         if (!boot_selection.active_valid) {
             HAL_GPIO_WritePin(BOOT_LED3_PORT, BOOT_LED3_PIN, GPIO_PIN_SET);
             boot_proto_run(false);   /* never returns */
@@ -337,6 +398,15 @@ int main(void)
 
     /* HND-003: slot and trial state for the application. */
     boot_selection_write_handover(&boot_selection);
+
+    boot_dbg_begin('I');
+    boot_dbg_str(boot_selection.active == BOOT_SLOT_A ? "boot slot A"
+                                                      : "boot slot B");
+    if (boot_selection.active_pending) {
+        boot_dbg_str(", trial ");
+        boot_dbg_dec(boot_selection.trial_count);
+    }
+    boot_dbg_end();
 
     /* TRY-004 / HND-004: a hung application resets and fails its trial. */
     boot_iwdg_start();
