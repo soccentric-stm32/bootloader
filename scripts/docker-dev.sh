@@ -29,6 +29,8 @@
 # Environment:
 #   STM32_IMAGE    image name        (default: stm32-dev:latest)
 #   OPENOCD_CFG    OpenOCD config    (default: board/st_nucleo_f7.cfg)
+#   OPENOCD_SPEED  SWD clock in kHz  (default: 1000; the board config's
+#                  2000 kHz made the flash algorithm time out on a NUCLEO-F767ZI)
 #   SERIAL_PORT    serial device     (default: first /dev/ttyACM*)
 #   WORKSPACE_DIR  sibling repos     (default: parent of the project)
 #
@@ -45,6 +47,7 @@ DOCKER_DIR="$PROJECT_DIR/docker"
 
 IMAGE="${STM32_IMAGE:-stm32-dev:latest}"
 OPENOCD_CFG="${OPENOCD_CFG:-board/st_nucleo_f7.cfg}"
+OPENOCD_SPEED="${OPENOCD_SPEED:-1000}"
 
 # Linux character device major numbers: 189 = USB devices, 166 = ttyACM.
 USB_MAJOR=189
@@ -139,7 +142,7 @@ cmd_run() {
 }
 
 cmd_probe() {
-    in_container bash -c "st-info --probe && openocd -f '$OPENOCD_CFG' -c 'init; targets; exit'"
+    in_container bash -c "st-info --probe && openocd -f '$OPENOCD_CFG' -c 'adapter speed $OPENOCD_SPEED' -c 'init; targets; exit'"
 }
 
 cmd_flash() {
@@ -151,8 +154,8 @@ cmd_flash() {
     addr="${2:-0x08000000}"
 
     case "$file" in
-        *.elf|*.hex) in_container openocd -f "$OPENOCD_CFG" -c "program $file verify reset exit" ;;
-        *.bin)       in_container openocd -f "$OPENOCD_CFG" -c "program $file $addr verify reset exit" ;;
+        *.elf|*.hex) in_container openocd -f "$OPENOCD_CFG" -c "adapter speed $OPENOCD_SPEED" -c "program $file verify reset exit" ;;
+        *.bin)       in_container openocd -f "$OPENOCD_CFG" -c "adapter speed $OPENOCD_SPEED" -c "program $file $addr verify reset exit" ;;
         *)           die "Unsupported file type: $1 (use .elf, .hex or .bin)" ;;
     esac
 }
@@ -160,16 +163,16 @@ cmd_flash() {
 cmd_erase() {
     # P2-4: mass erase covers both banks; flash erase_sector 0 0 last can
     # stop at bank 1 depending on the OpenOCD stm32f2x bank mapping.
-    in_container openocd -f "$OPENOCD_CFG" -c "init; reset halt; stm32f2x mass_erase 0; exit"
+    in_container openocd -f "$OPENOCD_CFG" -c "adapter speed $OPENOCD_SPEED" -c "init; reset halt; stm32f2x mass_erase 0; exit"
 }
 
 cmd_reset() {
-    in_container openocd -f "$OPENOCD_CFG" -c "init; reset run; exit"
+    in_container openocd -f "$OPENOCD_CFG" -c "adapter speed $OPENOCD_SPEED" -c "init; reset run; exit"
 }
 
 cmd_gdbserver() {
     info "OpenOCD listening: GDB on :3333, telnet on :4444 (Ctrl-C to stop)"
-    in_container openocd -f "$OPENOCD_CFG" -c "bindto 0.0.0.0"
+    in_container openocd -f "$OPENOCD_CFG" -c "adapter speed $OPENOCD_SPEED" -c "bindto 0.0.0.0"
 }
 
 cmd_debug() {
@@ -186,7 +189,7 @@ cmd_debug() {
     # stopped when GDB exits. Its log goes to /tmp so it does not clutter
     # the GDB console.
     in_container bash -c "
-        openocd -f '$OPENOCD_CFG' -l /tmp/openocd.log &
+        openocd -f '$OPENOCD_CFG' -c 'adapter speed $OPENOCD_SPEED' -l /tmp/openocd.log &
         ocd=\$!
         trap 'kill \$ocd 2>/dev/null; wait \$ocd 2>/dev/null' EXIT
         for _ in \$(seq 50); do

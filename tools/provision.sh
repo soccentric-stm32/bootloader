@@ -25,6 +25,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 DEV="$ROOT/scripts/docker-dev.sh"
 OPENOCD_CFG="${OPENOCD_CFG:-board/st_nucleo_f7.cfg}"
+OPENOCD_SPEED="${OPENOCD_SPEED:-1000}"   # see scripts/docker-dev.sh
 
 ELF=""
 WRITE_OPTIONS=1
@@ -53,13 +54,21 @@ case "$ELF" in
     *) echo "provision: $ELF is outside the project directory" >&2; exit 1 ;;
 esac
 
+# Each OpenOCD command goes in its own -c: OpenOCD 0.12 does not print the
+# output of commands joined with ';' inside one -c (options_read showed
+# nothing and the script stopped with "could not read the option bytes").
 run_openocd() {
-    "$DEV" run openocd -f "$OPENOCD_CFG" "$@" 2>&1
+    local args=()
+    for command in "$@"; do
+        args+=(-c "$command")
+    done
+    "$DEV" run openocd -f "$OPENOCD_CFG" -c "adapter speed $OPENOCD_SPEED" \
+        "${args[@]}" 2>&1
 }
 
 if [[ "$WRITE_OPTIONS" -eq 1 ]]; then
     echo "[*] reading option bytes"
-    read_output="$(run_openocd -c "init; reset halt; stm32f2x options_read 0; shutdown")" || true
+    read_output="$(run_openocd "init" "reset halt" "stm32f2x options_read 0" "shutdown")" || true
     echo "$read_output"
 
     user_options="$(sed -n 's/.*user_options 0x\([0-9A-Fa-f]*\).*/\1/p' <<<"$read_output" | head -1)"
@@ -76,8 +85,11 @@ if [[ "$WRITE_OPTIONS" -eq 1 ]]; then
     # bootloader, the recovery path when BOOT0 is high. Writing 0x0000
     # would point BOOT0 at ITCM RAM and lose that path.
     old=$((16#$user_options))
-    # bit 8 = nDBOOT = 1, bit 9 = nDBANK = 0; keep the other user options.
-    new=$(( (old & ~0x300) | 0x100 ))
+    # bit 8 = nDBOOT = 1, bit 9 = nDBANK = 0.  Bits 4/5 = WWDG_SW/IWDG_SW = 1
+    # (software watchdogs, the factory default per BASM-001): a hardware
+    # WWDG starts at every reset, BOOT never refreshes it, and the board
+    # resets before the HWLINK listen window ends.  Keep the other options.
+    new=$(( (old & ~0x300) | 0x100 | 0x30 ))
     new_hex="$(printf '0x%X' "$new")"
     boot0="$boot_add0"
     if [[ $((16#$boot_add0)) -ne $((16#0080)) ]]; then
@@ -85,8 +97,8 @@ if [[ "$WRITE_OPTIONS" -eq 1 ]]; then
     fi
     boot1="$boot_add1"
 
-    echo "[*] option bytes: user_options 0x${user_options} -> ${new_hex} (nDBANK=0, nDBOOT=1), boot_add0 0x${boot_add0} -> 0x${boot0}, boot_add1 0x${boot1} (kept)"
-    write_output="$(run_openocd -c "init; reset halt; stm32f2x options_write 0 ${new_hex} 0x${boot0} 0x${boot1}; shutdown")" || true
+    echo "[*] option bytes: user_options 0x${user_options} -> ${new_hex} (nDBANK=0, nDBOOT=1, software WWDG/IWDG), boot_add0 0x${boot_add0} -> 0x${boot0}, boot_add1 0x${boot1} (kept)"
+    write_output="$(run_openocd "init" "reset halt" "stm32f2x options_write 0 ${new_hex} 0x${boot0} 0x${boot1}" "shutdown")" || true
     echo "$write_output"
 
     if ! grep -q "write options complete" <<<"$write_output"; then
@@ -98,9 +110,9 @@ if [[ "$WRITE_OPTIONS" -eq 1 ]]; then
 fi
 
 echo "[*] mass erase"
-run_openocd -c "init; reset halt; stm32f2x mass_erase 0; shutdown"
+run_openocd "init" "reset halt" "stm32f2x mass_erase 0" "shutdown"
 
 echo "[*] flashing $ELF"
-run_openocd -c "init; reset halt; program $ELF_CONTAINER verify; reset run; shutdown"
+run_openocd "init" "reset halt" "program $ELF_CONTAINER verify" "reset run" "shutdown"
 
 echo "[*] provisioning complete"

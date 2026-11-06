@@ -113,3 +113,13 @@ void boot_clock_deinit(void)
     CLEAR_REG(RCC->CFGR);
     SystemCoreClock = HSI_VALUE;
 }
+
+/* HAL_RCC_ClockConfig() starts SysTick with its interrupt enabled, and
+ * every timeout in BOOT (listen window, link activity, flash and DMA
+ * waits) reads HAL_GetTick().  Without this handler the first tick lands
+ * in the startup file's Default_Handler loop and BOOT never serves the
+ * link.  The hand-over stops SysTick before jumping (HND-001). */
+void SysTick_Handler(void)
+{
+    HAL_IncTick();
+}
