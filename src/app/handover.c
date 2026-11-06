@@ -1,14 +1,32 @@
-/*
- * handover.c - application checks and hand-over (section 10)
+/**
+ * @file    handover.c
+ * @brief   Pre-jump checks and hand-over of control to the application
+ *          (SRS section 10).
  *
- * Author:  Sandesh Ghimire <sandesh@soccentric.com>
- * Date:    2026-11-03
- * Target:  STM32F767ZIT6
- * SRS:     HND-001..HND-004, SWP-001/SWP-002
+ * @details
+ * This module owns the last two bootloader phases:
  *
- * BOOT always reads the application vector table from the slot's physical
- * address.  For slot B the final swap and jump run from the .ramfunc copy in
- * DTCM because SWP_FB remaps the bank BOOT executes from.
+ * 1. **`.ramfunc` relocation** (@ref boot_ramfunc_init) - copies the
+ *    `.ramfunc` linker section from flash into DTCM right after reset.
+ *    The DTCM copy exists because the slot-B swap must be invoked from a
+ *    memory region that is *not* remapped by the swap itself.
+ * 2. **Hand-over proper** (@ref boot_handover) - tears down peripheral,
+ *    interrupt and clock state, then either jumps to slot A or performs
+ *    the A/B bank swap and jumps to slot B.  Never returns.
+ *
+ * Design rule: *BOOT always reads the application vector table from the
+ * slot's physical address* (`boot_slot_base(slot)`), so the vector table
+ * is read once at the moment of hand-over and both the initial SP and
+ * the reset-vector entry are then passed to the jump helper as plain
+ * values.  For slot B, the final swap-and-jump execute from the
+ * DTCM-resident `.ramfunc` copy, because SWP_FB remaps the flash bank
+ * the bootloader itself is executing from - executing from that bank
+ * during the swap would corrupt the running code.
+ *
+ * @author  Sandesh Ghimire <sandesh@soccentric.com>
+ * @date    2026-11-03
+ * @target  STM32F767ZIT6
+ * @srs     HND-001..HND-004, SWP-001/SWP-002
  */
 
 #include "stm32f7xx_hal.h"
@@ -18,12 +36,46 @@
 #include "handover.h"
 #include "uart3.h"
 
+/**
+ * @brief   Slot-B privileged helper: perform the bank swap, then branch
+ *          to the application vector table.
+ *
+ * @details Defined (out-of-band, typically a small asm stub) to satisfy
+ *          the SWP-001/SWP-002 sequence.  Lives in the `.ramfunc` linker
+ *          section so a DTCM-resident copy is guaranteed to be present
+ *          at the moment it is invoked from @ref boot_handover.
+ *
+ * @param[in] slot_b Flag telling the helper whether the target is
+ *                   slot B (1) or slot A (0); slot B enables the
+ *                   bank-swap register write before the branch.
+ * @param[in] sp     Initial stack pointer to load into `MSP` before the
+ *                   branch (taken from word 0 of the target vector
+ *                   table).
+ * @param[in] entry  Reset-vector entry of the target image (word 1 of
+ *                   the vector table).
+ *
+ * @warning Does not return.
+ */
 extern void boot_swap_and_jump(uint32_t slot_b, uint32_t sp, uint32_t entry)
     __attribute__((noreturn));
 
+/**
+ * @name RAM-function section linker symbols.
+ * @brief Boundaries of the `.ramfunc` linker section used by the copy
+ *        loop in @ref boot_ramfunc_init.
+ * @{
+ */
+
+/** Start of the `.ramfunc` section's copy *destination* in DTCM. */
 extern uint32_t _sramfunc[];
+
+/** End (one past) of the `.ramfunc` copy destination in DTCM. */
 extern uint32_t _eramfunc[];
+
+/** Start of the `.ramfunc` section's *source* in flash (LMA). */
 extern uint32_t _siramfunc[];
+
+/** @} */
 
 void boot_ramfunc_init(void)
 {
@@ -37,6 +89,19 @@ void boot_ramfunc_init(void)
     __ISB();
 }
 
+/**
+ * @brief   Switch all three user LEDs off via the reset-state BSRR mask.
+ *
+ * @details Direct register write to `GPIOx->BSRR` with the pin bits in
+ *          the high half, which clears them to LOW.  This runs before
+ *          the GPIO clocks are gated, so the port registers are still
+ *          live.  Using BSRR (instead of ODR) keeps the operation
+ *          atomic with respect to any concurrent read-modify-write -
+ *          there are no other writers here, but the pattern is the
+ *          safe, interrupt-race-free one on STM32.
+ *
+ * @srs     BGEN-008
+ */
 static void leds_off(void)
 {
     uint32_t mask = BOOT_LED1_PIN | BOOT_LED2_PIN | BOOT_LED3_PIN;

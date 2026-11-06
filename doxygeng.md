@@ -12,15 +12,15 @@ project-owned `.c` / `.h` file. One file per commit, each commit pushed.
 ## File checklist
 
 ### board/
-- [ ] `board/boot_board.h`
-- [ ] `board/stm32f7xx_hal_conf.h`
+- [x] `board/boot_board.h`
+- [x] `board/stm32f7xx_hal_conf.h`
 
 ### keys/
-- [ ] `keys/dev_pubkey.c`
+- [x] `keys/dev_pubkey.c`
 
 ### src/app/
-- [ ] `src/app/handover.c`
-- [ ] `src/app/handover.h`
+- [x] `src/app/handover.c`
+- [x] `src/app/handover.h`
 - [ ] `src/app/main.c`
 - [ ] `src/app/selection.c`
 - [ ] `src/app/selection.h`
@@ -70,3 +70,6 @@ project-owned `.c` / `.h` file. One file per commit, each commit pushed.
 
 ## Log
 - started
+- board/boot_board.h, board/stm32f7xx_hal_conf.h done
+- keys/dev_pubkey.c done
+- src/app/handover.h, src/app/handover.c done
