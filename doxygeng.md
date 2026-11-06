@@ -28,7 +28,7 @@ project-owned `.c` / `.h` file. One file per commit, each commit pushed.
 - [x] `src/app/update.h`
 
 ### src/bsp/
-- [ ] `src/bsp/clock.c`
+- [x] `src/bsp/clock.c`
 - [x] `src/bsp/clock.h`
 - [ ] `src/bsp/fault.c`
 - [ ] `src/bsp/flash.c`

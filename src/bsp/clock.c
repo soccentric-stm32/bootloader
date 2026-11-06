@@ -1,20 +1,39 @@
-/*
- * clock.c - 216 MHz clock tree from the ST-LINK MCO
+/**
+ * @file    clock.c
+ * @brief   216 MHz clock tree from the ST-LINK MCO.
  *
- * Author:  Sandesh Ghimire <sandesh@soccentric.com>
- * Date:    2026-11-03
- * Target:  STM32F767ZIT6 rev Z @ 3.3 V (voltage scale 1)
- * SRS:     BGEN-003 (clock tree documented), BGEN-004, HND-001
+ * @details
+ * Clock plan (all values in MHz):
  *
- * HSE bypass 8 MHz (ST-LINK MCO on PH0), PLLM = 8 (1 MHz VCO input),
- * PLLN = 432 (432 MHz VCO), PLLP = 2 (216 MHz SYSCLK), PLLQ = 9 (48 MHz).
- * AHB /1, APB1 /4 (54 MHz), APB2 /2 (108 MHz), flash latency 7 WS,
- * over-drive enabled.
+ * | stage        | value  | notes                                |
+ * |--------------|--------|--------------------------------------|
+ * | HSE bypass   |   8    | ST-LINK MCO on PH0                   |
+ * | PLL input    |   1    | PLLM = 8                             |
+ * | VCO          | 432    | PLLN = 432                           |
+ * | SYSCLK/HCLK  | 216    | PLLP = 2                             |
+ * | PCLK1 (APB1) |  54    | /4 - keeps USART3 within 0.01 % at
+ * |              |        | 921600 baud                          |
+ * | PCLK2 (APB2) | 108    | /2                                   |
+ * | flash        | 7 WS   | over-drive enabled                   |
+ *
+ * @author  Sandesh Ghimire <sandesh@soccentric.com>
+ * @date    2026-11-03
+ * @target  STM32F767ZIT6 rev Z @ 3.3 V (voltage scale 1)
+ * @srs     BGEN-003 (clock tree documented), BGEN-004, HND-001
  */
 
 #include "stm32f7xx_hal.h"
 #include "clock.h"
 
+/**
+ * @brief   Bring the clock tree up to the documented target (see file
+ *          header and @ref boot_clock_init in clock.h).
+ *
+ * @return  `true` on success; `false` if any HAL call fails (osc, PLL,
+ *          over-drive, or clock switch).
+ *
+ * @srs     BGEN-003, BGEN-004
+ */
 bool boot_clock_init(void)
 {
     __HAL_RCC_PWR_CLK_ENABLE();
@@ -26,10 +45,10 @@ bool boot_clock_init(void)
     osc.HSIState       = RCC_HSI_OFF;
     osc.PLL.PLLState   = RCC_PLL_ON;
     osc.PLL.PLLSource  = RCC_PLLSOURCE_HSE;
-    osc.PLL.PLLM       = 8U;
-    osc.PLL.PLLN       = 432U;
-    osc.PLL.PLLP       = RCC_PLLP_DIV2;
-    osc.PLL.PLLQ       = 9U;
+    osc.PLL.PLLM       = 8U;      /* 8 MHz / 8 = 1 MHz into the VCO   */
+    osc.PLL.PLLN       = 432U;    /* 1 MHz * 432 = 432 MHz VCO        */
+    osc.PLL.PLLP       = RCC_PLLP_DIV2;   /* 432 / 2 = 216 MHz SYSCLK */
+    osc.PLL.PLLQ       = 9U;      /* 432 / 9 = 48 MHz (I2S ref, if used) */
 
     if (HAL_RCC_OscConfig(&osc) != HAL_OK) {
         return false;
@@ -56,6 +75,16 @@ bool boot_clock_init(void)
     return true;
 }
 
+/**
+ * @brief   Return the clock tree to a safe, application-owned state.
+ *
+ * @details See @ref boot_clock_deinit in clock.h for the contract.
+ *          The long tail of this function is the ordered, polling-based
+ *          teardown that the hardware requires (you cannot clear
+ *          PLL/HSE bits while their ready flags are still set).
+ *
+ * @srs     HND-001, BGEN-007
+ */
 void boot_clock_deinit(void)
 {
     /* HSI on and SYSCLK back to HSI. */
@@ -114,11 +143,23 @@ void boot_clock_deinit(void)
     SystemCoreClock = HSI_VALUE;
 }
 
-/* HAL_RCC_ClockConfig() starts SysTick with its interrupt enabled, and
- * every timeout in BOOT (listen window, link activity, flash and DMA
- * waits) reads HAL_GetTick().  Without this handler the first tick lands
- * in the startup file's Default_Handler loop and BOOT never serves the
- * link.  The hand-over stops SysTick before jumping (HND-001). */
+/**
+ * @brief   SysTick interrupt handler, provided by this driver because
+ *          it owns the tick.
+ *
+ * @details `HAL_RCC_ClockConfig()` arms SysTick with its interrupt
+ *          enabled the moment the PLL is up, and every timeout in BOOT
+ *          (the 500 ms Hello window, the 120 s link-activity watchdog,
+ *          and the internal HAL flash / DMA waits) reads
+ *          `HAL_GetTick()`.  If the handler is not defined, the first
+ *          tick lands in the linker's `Default_Handler` infinite loop
+ *          and BOOT never services the update link.  Hand-over stops
+ *          SysTick before jumping (HND-001), so the application
+ *          installs its own handler.
+ *
+ * @note    This file must be linked into exactly one image (BOOT);
+ *          the application provides its own.
+ */
 void SysTick_Handler(void)
 {
     HAL_IncTick();
