@@ -6,10 +6,9 @@
 | `bootctl.py` | HWLINK command-line updater: `info`, `update` (`--both`, `--a/--b`, `--json`), `activate`, `enter`, `wait`, `reset`, `set-baud`. |
 | `check_contracts.py` | Cross-check layout constants, generated schema and an application repo's `boot_contract.h`/`hwlink.fbs`. |
 | `package_hwlink.py` | Publish the canonical `hwlink.fbs`, generated Python package, `mkimage.py`, `boot_layout.h` and vendored runtime bundle (P3-8). |
-| `gui/device.py` | Normalises `bootctl --json` BootInfo and shares ST-LINK port discovery with `bootctl.py`. |
-| `gui/runner.py` | Sequential QProcess queue used by the GUI production workflow. |
+| `gui/` | The flash GUI: `window.py` (main window), `pages.py` (bootloader and project pages), `projects.py` (the five firmware projects), `runner.py` (job queue), `device.py` (BootInfo, port discovery), `widgets.py`, `theme.py`, `icons.py`. |
 | `provision.sh` | Set dual-bank option bytes, mass-erase and flash BOOT over SWD with OpenOCD. |
-| `flash_gui.py` | PySide6 GUI: flash BOOT over SWD, or update an application image over HWLINK with a slot suggestion. |
+| `flash_gui.py` | BOOT Flasher, the PySide6 GUI: build and flash BOOT over SWD; clone, build, sign and flash the five firmware projects through BOOT. |
 
 `bootctl.py` needs only pyserial:
 
@@ -41,36 +40,45 @@ flatc --python -o tools/generated protocol/hwlink.fbs
 
 ## Flash GUI
 
-`flash_gui.py` is a PySide6 front-end for the host tools.  It is a host-side
-app with a sidebar and two modes:
+`flash_gui.py` (BOOT Flasher) does two things: flash the bootloader, and
+flash the five firmware projects.  The sidebar has one page for each; its
+**Board** panel shows the ST-LINK port and what BOOT reports (version,
+active and next slot, trusted key, security floor).  The panel reads with
+`bootctl --no-enter`, so it never stops a running application.
 
-**Bootloader** — program BOOT over SWD.  By default OpenOCD runs inside the
-`stm32-dev` container through `scripts/docker-dev.sh`, so no host toolchain
-is needed; turn the container switch off to use the host's OpenOCD/st-info.
-Pick `build/boot.elf` (or a `.hex`/`.bin`) and press **Flash**; **Erase**,
-**Reset** and **Probe** use the same helper.
+**Bootloader** builds BOOT (`make build`) and programs it over SWD.  By
+default both run in the `stm32-dev` container through
+`scripts/docker-dev.sh`; turn **Build in Docker** off to use the host's
+cmake and OpenOCD.  **More** has Probe, Reset, Provision (option bytes,
+mass erase, BOOT) and Erase; the last two ask first.
 
-**Application** — update an application image over the ST-LINK VCP with
-HWLINK (`bootctl.py update --json`).  Pick a `.img` (created by
-`mkimage.py`), the serial port and baud.  The target slot is read-only and
-comes from BOOT's `target_slot` (protocol minor 2); BOOT decides.  **Enter
-BOOT** asks a running application to reset into BOOT, and update/info do it
-automatically.  **Activate after update** appends `--activate --wait`, so
-the GUI waits for the application's `GetStatus` to report `CONFIRMED` or a
-rollback.  The log and progress bar are fed by `bootctl --json` events.
+**Applications**: app-c-freertos, app-c-zephyr, app-rust-freertos,
+app-rust-zephyr and validation-firmware.  **Build, Sign & Flash** runs:
 
-The **Production** page runs the ordered workflow: build BOOT, build the
-application, provision option bytes, flash BOOT, flash slots A+B, verify.
+1. **Clone**, when the repository is missing: `git clone` with the URL from
+   the workspace `repos.yaml`, next to this repository.
+2. **Build**: the project's `make build`.
+3. **Sign**: `mkimage.py --sign` into `<image>-signed.img`, then
+   `--inspect` (BSAFE-006).  *Match board* signs with BOOT's floor; if the
+   floor is unknown the step reads it first.
+4. **Flash**: `bootctl.py update --activate --wait`.
+
+Before flashing, the page warns if the key differs from the one BOOT
+trusts, or if the counter is below the floor or would raise it.  Each step
+also runs on its own.  **More** has Pull, Open folder, Enter bootloader and
+Reset.
 
 ```sh
-make gui-deps       # one-time: install PySide6 and pyserial
+make gui-deps       # one-time: PySide6, pyserial, cryptography
 make gui            # launch the GUI
 ```
 
-Firmware can also be dragged onto the window.  Shortcuts: `Ctrl+O` browse,
-`Ctrl+Enter` flash, `Ctrl+R` reset, `Esc` cancel.  The last firmware,
-address, port, production paths and slot choices are remembered between
-sessions.
+Shortcuts: `Ctrl+1`..`Ctrl+6` pages, `Ctrl+Enter` run the whole pipeline,
+`Ctrl+B` build, `Ctrl+Shift+Enter` flash only, `Esc` cancel, `F5` refresh
+the board, `Ctrl+R` reset, `Ctrl+K` clear the output.  The GUI follows the
+system light/dark setting.  Commands, paths, keys and counters are
+remembered per page.  `FIRMWARE_WORKSPACE` points at another workspace
+directory.
 
 `make gui-check` byte-compiles the app and runs as part of `make build`, but
 PySide6 is only needed to run the GUI.

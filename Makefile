@@ -24,7 +24,7 @@
 #   make probe          detect the ST-LINK and the target chip
 #   make size           show the firmware size
 #   make gui            launch the PySide6 flash GUI (tools/flash_gui.py)
-#   make gui-deps       install the GUI dependencies (PySide6)
+#   make gui-deps       install the GUI dependencies (PySide6, cryptography)
 #   make gui-check      byte-compile the GUI app (runs as part of build)
 #   make test           host C tests, Python tests and contract check
 #   make package-hwlink publish the canonical HWLINK contract bundle
@@ -45,7 +45,7 @@ ELF        := $(BUILD_DIR)/boot.elf
 DEV        := scripts/docker-dev.sh
 OPENOCD    := openocd -f board/st_nucleo_f7.cfg
 GUI        := tools/flash_gui.py
-GUI_MODULES := tools/gui/device.py tools/gui/runner.py
+GUI_MODULES := $(wildcard tools/gui/*.py)
 
 .DEFAULT_GOAL := build
 

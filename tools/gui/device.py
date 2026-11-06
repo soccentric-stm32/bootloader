@@ -33,6 +33,9 @@ class BootInfoView:
     boot_version: str = ""
     boot_build: str = ""
     last_outcome: str = ""
+    signed_images: bool = False
+    key_id: str = ""
+    security_floor: int | None = None
     slots: list[SlotView] = field(default_factory=list)
 
     @property
@@ -56,6 +59,10 @@ def parse_boot_info(data: dict | None) -> BootInfoView | None:
         boot_version=str(data.get("boot_version", "")),
         boot_build=str(data.get("boot_build", "")),
         last_outcome=str(data.get("last_outcome", "")),
+        signed_images=bool(data.get("signed_images", False)),
+        key_id=str(data.get("key_id", "")).lower(),
+        security_floor=(int(data["security_floor"])
+                        if data.get("security_floor") is not None else None),
     )
     for item in data.get("slots", []):
         view.slots.append(SlotView(

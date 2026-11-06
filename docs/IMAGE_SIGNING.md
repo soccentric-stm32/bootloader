@@ -209,6 +209,23 @@ python3 tools/bootctl.py --port /dev/ttyACM0 update --both --a a.img --b b.img
 `bootctl info` shows each slot's security counter and the current floor. If
 the board is running the application, `bootctl` switches it to BOOT first.
 
+**From the flash GUI.** `make gui`, then pick one of the five firmware
+projects in the sidebar (app-c-freertos, app-c-zephyr, app-rust-freertos,
+app-rust-zephyr, validation-firmware) and press **Build, Sign & Flash**:
+
+1. The GUI clones the repository if it is missing, runs its build, signs
+   the image from [§7](#7-add-signing-to-an-application) into
+   `<image>-signed.img` with `mkimage.py --sign`, checks it with
+   `--inspect`, and uploads it with `bootctl update --activate --wait`.
+2. The signing key defaults to `BOOT_SIGNING_KEY`, or the development key.
+   The Board panel shows BOOT's key id and floor, and the page warns
+   before an upload BOOT would refuse, or one that raises the floor.
+3. The counter defaults to *Match board*: the image is signed with the
+   board's floor, so it installs without raising it
+   ([§8](#8-choosing-the-security-counter)).
+
+Signing needs `cryptography` in the GUI's Python (`make gui-deps`).
+
 ---
 
 ## 7. Add signing to an application

@@ -20,6 +20,7 @@ A bare-metal A/B bootloader for the NUCLEO-F767ZI (STM32F767ZI). It uses the dua
 - About 28 KB of flash; the build fails if it outgrows 32 KB
 - Never writes option bytes, OTP, protection or its own sectors
 - `bootctl.py` host tool: info, update, activate, enter, wait, reset, set-baud, JSON output
+- `flash_gui.py` (BOOT Flasher): PySide6 GUI that builds and flashes BOOT, and clones, builds, signs and flashes the five firmware projects
 - `mkimage.py`: image wrapping, signing, key generation, inspection, metadata sectors and combined factory HEX
 - `provision.sh`: option bytes, mass erase and bootloader programming over SWD
 - Host C tests against a simulated 2 MB flash

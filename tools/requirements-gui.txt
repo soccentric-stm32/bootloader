@@ -1,4 +1,6 @@
 # GUI dependencies for tools/flash_gui.py (host only, not baked into the
-# stm32-dev container).  pyserial is needed for application updates.
+# stm32-dev container).  pyserial is needed for application updates and
+# cryptography for signing images in Firmware mode (BSAFE-006).
 PySide6>=6.5
 pyserial>=3.5
+cryptography>=41
