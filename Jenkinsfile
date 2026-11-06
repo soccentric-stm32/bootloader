@@ -32,8 +32,8 @@ pipeline {
         booleanParam(name: 'STRICT_LINT', defaultValue: false, description: 'Fail on any clang-tidy finding')
         booleanParam(name: 'RUN_HIL', defaultValue: false, description: 'Run the bench NUCLEO hardware-in-the-loop job')
         string(name: 'HIL_PORT', defaultValue: '/dev/ttyACM0', description: 'ST-LINK VCP for the HIL job')
-        string(name: 'HIL_IMAGE_A', defaultValue: 'build/app_a.img', description: 'Confirmed application image for slot A')
-        string(name: 'HIL_IMAGE_B', defaultValue: 'build/app_b.img', description: 'Confirmed application image for slot B')
+        string(name: 'HIL_IMAGE_A', defaultValue: 'build/app_a.img', description: 'Confirmed application image for slot A (signed with keys/dev-signing-key.pem)')
+        string(name: 'HIL_IMAGE_B', defaultValue: 'build/app_b.img', description: 'Confirmed application image for slot B (signed with keys/dev-signing-key.pem)')
     }
 
     environment {
@@ -226,9 +226,11 @@ PY
                     tools/bootctl.py --port "$HIL_PORT" info --json
 
                     # Rollback: a vector-table-only image passes the header,
-                    # vector and CRC checks but faults as soon as BOOT jumps
-                    # to it, so the trial limit must reject it and boot the
-                    # confirmed slot again.
+                    # signature, vector and CRC checks but faults as soon as
+                    # BOOT jumps to it, so the trial limit must reject it and
+                    # boot the confirmed slot again.  It is signed with the
+                    # development key (BSAFE-006); unsigned, BOOT would refuse
+                    # it at UpdateBegin and the rollback path would never run.
                     python3 - <<'PY'
 import struct, subprocess, sys
 from pathlib import Path
@@ -237,7 +239,8 @@ binary = work / "hil_bad.bin"
 binary.write_bytes(struct.pack("<II", 0x20020000, 0x0800C001))
 subprocess.run([sys.executable, "tools/mkimage.py", "--input", str(binary),
                 "--output", str(work / "hil_bad.img"), "--version", "0.0.1",
-                "--name", "hil-bad"], check=True)
+                "--name", "hil-bad", "--key", "keys/dev-signing-key.pem"],
+               check=True)
 PY
                     set +e
                     tools/bootctl.py --port "$HIL_PORT" update \

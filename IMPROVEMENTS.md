@@ -80,7 +80,16 @@ and again on every `GetBootInfo`.  Measure it; if it matters, CRC only the
 candidate slot first and the fallback only when the candidate fails, and
 cache scan results inside an update session.
 
-### P2-8 Image authentication (BSAFE-006)
+### P2-8 Image authentication (BSAFE-006) — done 2026-11-05
+
+Implemented as header version 2: ECDSA P-256 (micro-ecc, verify only) over
+header bytes 0..127, which include the image SHA-256 and a security
+counter.  Checked at `UpdateBegin` (before any erase), `UpdateEnd`,
+`Activate` and on every boot.  The anti-rollback floor is derived from the
+confirmed slots' signed headers (BSAFE-007), so no OTP is needed.  LTO pays
+for the code; BOOT is about 31 KB of its 32 KB.  See `keys/README.md`.
+
+Original note:
 
 CRC32 only protects against corruption.  When signing is in scope: ECDSA
 P-256 or Ed25519 signature in the 256-byte header's reserved area, public

@@ -9,6 +9,8 @@ A bare-metal A/B bootloader for the NUCLEO-F767ZI (STM32F767ZI). It uses the dua
 - Image updates over UART with the HWLINK protocol (COBS, CRC-32, FlatBuffers)
 - 115200 baud by default, 921600 baud on request within a session
 - CRC32 check of the image header and of the slot contents read back from flash
+- Signed images: ECDSA P-256 over a header that carries the image SHA-256, checked before an update erases anything and on every boot
+- Anti-rollback security counter held in the signed headers, with no OTP or option-byte writes
 - Trial boot with an IWDG watchdog and automatic rollback after three failed starts
 - Append-only, power-loss-safe metadata records (VERIFIED, ACTIVATED, CONFIRMED, REJECTED, TRIAL)
 - Lazy sector erase so only the sectors an update touches are erased
@@ -18,7 +20,7 @@ A bare-metal A/B bootloader for the NUCLEO-F767ZI (STM32F767ZI). It uses the dua
 - About 28 KB of flash; the build fails if it outgrows 32 KB
 - Never writes option bytes, OTP, protection or its own sectors
 - `bootctl.py` host tool: info, update, activate, enter, wait, reset, set-baud, JSON output
-- `mkimage.py`: image wrapping, inspection, metadata sectors and combined factory HEX
+- `mkimage.py`: image wrapping, signing, key generation, inspection, metadata sectors and combined factory HEX
 - `provision.sh`: option bytes, mass erase and bootloader programming over SWD
 - Host C tests against a simulated 2 MB flash
 - Python tests including a simulated bootloader on a pseudo-terminal
@@ -32,8 +34,14 @@ A bare-metal A/B bootloader for the NUCLEO-F767ZI (STM32F767ZI). It uses the dua
 scripts/build.sh                                   # build inside the stm32-dev container
 make flash                                         # flash build/boot.elf over SWD
 make test                                          # host, Python and contract tests
-tools/bootctl.py update app.img --activate --wait  # update an application over UART
+tools/mkimage.py --sign app.img --key keys/dev-signing-key.pem --output app-signed.img
+tools/bootctl.py update app-signed.img --activate --wait  # update an application over UART
 ```
+
+BOOT only accepts signed images.  The default build trusts the published
+development key in [keys/](keys/README.md), which is fine on the bench but must
+never ship: generate a product key and build with
+`-DBOOT_SIGNING_KEY_SOURCE=<path to its pubkey .c>`.
 
 ## Related projects
 

@@ -681,6 +681,7 @@ static int hwlink_ImageHeader_verify_table(flatcc_table_verifier_descriptor_t *t
     if ((ret = flatcc_verify_vector_field(td, 10, 0, 1, 1, INT64_C(4294967295)) /* git_commit */)) return ret;
     if ((ret = flatcc_verify_string_field(td, 11, 0) /* name */)) return ret;
     if ((ret = flatcc_verify_field(td, 12, 4, 4) /* header_crc32 */)) return ret;
+    if ((ret = flatcc_verify_vector_field(td, 13, 0, 1, 1, INT64_C(4294967295)) /* extension */)) return ret;
     return flatcc_verify_ok;
 }
 
@@ -721,6 +722,7 @@ static int hwlink_BootSlotInfo_verify_table(flatcc_table_verifier_descriptor_t *
     if ((ret = flatcc_verify_string_field(td, 11, 0) /* name */)) return ret;
     if ((ret = flatcc_verify_field(td, 12, 4, 4) /* image_size */)) return ret;
     if ((ret = flatcc_verify_string_field(td, 13, 0) /* detail */)) return ret;
+    if ((ret = flatcc_verify_field(td, 14, 4, 4) /* security_counter */)) return ret;
     return flatcc_verify_ok;
 }
 
@@ -756,6 +758,9 @@ static int hwlink_BootInfo_verify_table(flatcc_table_verifier_descriptor_t *td)
     if ((ret = flatcc_verify_field(td, 6, 1, 1) /* target_slot */)) return ret;
     if ((ret = flatcc_verify_string_field(td, 7, 0) /* boot_version */)) return ret;
     if ((ret = flatcc_verify_string_field(td, 8, 0) /* boot_build */)) return ret;
+    if ((ret = flatcc_verify_field(td, 9, 1, 1) /* signed_images */)) return ret;
+    if ((ret = flatcc_verify_field(td, 10, 4, 4) /* key_id */)) return ret;
+    if ((ret = flatcc_verify_field(td, 11, 4, 4) /* security_floor */)) return ret;
     return flatcc_verify_ok;
 }
 

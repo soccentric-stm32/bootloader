@@ -1417,9 +1417,15 @@ class FlashWindow(QMainWindow):
                 image_b = app_path(self.app_b_edit.text())
                 binary_path = app_path(binary)
                 version = self.app_version_edit.text().strip() or "1.0.0"
+                # BSAFE-006: BOOT only accepts signed images.  The key comes
+                # from BOOT_SIGNING_KEY; the default is the development key.
+                signing_key = os.environ.get(
+                    "BOOT_SIGNING_KEY",
+                    str(ROOT / "keys" / "dev-signing-key.pem"))
                 mkimage = (f"{sys.executable} {ROOT / 'tools' / 'mkimage.py'} "
                            f"--input '{binary_path}' --version '{version}' "
-                           f"--timestamp $(date +%s) --name app")
+                           f"--timestamp $(date +%s) --name app "
+                           f"--key '{signing_key}'")
                 command = (f"{command} && {mkimage} --output '{image_a}'"
                            f" && {mkimage} --output '{image_b}'")
             return {"program": "bash", "args": ["-lc", command],

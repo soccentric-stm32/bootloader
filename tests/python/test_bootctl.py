@@ -5,7 +5,8 @@ Python tests for bootctl.py and mkimage.py.
 The protocol test runs a tiny simulated BOOT on a pty and drives the real
 Link/code with the same HWLINK framing and FlatBuffers messages.  It covers
 the P1-2 --both loop, EnterBootloader auto-enter and the P1-4 metadata
-layout.
+layout.  BSAFE-006: mkimage signing, inspection and re-signing, and the
+signed header reaching BOOT intact through UpdateBegin.
 """
 
 from __future__ import annotations
@@ -65,6 +66,7 @@ class FakeBoot(threading.Thread):
         self.drop_next_type: int | None = None
         self.drop_all_types: set[int] = set()
         self.expect_offset = 0
+        self.begin_header: bytes | None = None
 
     def run(self) -> None:
         while not self.stop.is_set():
@@ -181,6 +183,27 @@ class FakeBoot(threading.Thread):
         return bootctl.cobs_encode(
             bootctl.build_raw(_finish(b, 7, body), seq, RESPONSE))
 
+    @staticmethod
+    def _rebuild_header(image) -> bytes:
+        """The 256-byte header BOOT rebuilds from hwlink.ImageHeader."""
+        import zlib
+        header = bytearray(256)
+        struct.pack_into("<IHHIIIIIII", header, 0, image.Magic(),
+                         image.HeaderVersion(), image.HeaderSize(),
+                         image.ImageType(), image.Version(),
+                         image.ImageSize(), image.ImageCrc32(),
+                         image.LoadAddress(), image.EntryAddress(),
+                         image.BuildTimestamp())
+        commit = bytes(image.GitCommit(i)
+                       for i in range(image.GitCommitLength()))
+        header[36:56] = commit[:20].ljust(20, b"\0")
+        header[56:88] = (image.Name() or b"")[:32].ljust(32, b"\0")
+        if image.ExtensionLength():
+            header[88:252] = bytes(image.Extension(i)
+                                   for i in range(image.ExtensionLength()))
+        struct.pack_into("<I", header, 252, zlib.crc32(header[:252]))
+        return bytes(header)
+
     def _ack(self, seq: int, next_offset: int = 0) -> bytes:
         b = flatbuffers.Builder(64)
         Ack.AckStart(b)
@@ -202,6 +225,9 @@ class FakeBoot(threading.Thread):
                 return self._boot_info(seq)
             return self._ack(seq)
         if body_type == 13:     # UpdateBegin
+            begin = UpdateBegin.UpdateBegin()
+            begin.Init(body.Bytes, body.Pos)
+            self.begin_header = self._rebuild_header(begin.Header())
             self.expect_offset = 0
             return self._ack(seq, 0)
         if body_type == 14:     # UpdateData
@@ -237,12 +263,15 @@ class FakeBoot(threading.Thread):
         return self._ack(seq)
 
 
-def _make_image(tmp_path: pathlib.Path, name: str = "app.img") -> pathlib.Path:
+def _make_image(tmp_path: pathlib.Path, name: str = "app.img",
+                extra: list[str] | None = None) -> pathlib.Path:
     binary = tmp_path / "app.bin"
-    binary.write_bytes(struct.pack("<II", 0x20020000, 0x0800C001))
+    binary.write_bytes(struct.pack("<II", 0x20020000, 0x0800C001) +
+                       bytes(range(40)))
     image = tmp_path / name
     argv = ["--input", str(binary), "--output", str(image),
-            "--version", "1.2.3", "--commit", "0" * 40, "--name", "test"]
+            "--version", "1.2.3", "--commit", "0" * 40, "--name", "test",
+            *(extra or [])]
     old = sys.argv
     sys.argv = ["mkimage.py", *argv]
     try:
@@ -431,3 +460,113 @@ def test_both_loop_on_simulated_device(tmp_path):
     finally:
         device.stop.set()
         device.join(timeout=2)
+
+
+# ------------------------------------------------------------ BSAFE-006
+
+DEV_KEY = TOOLS.parent / "keys" / "dev-signing-key.pem"
+
+
+def test_signed_image_roundtrip(tmp_path, capsys):
+    image = _make_image(tmp_path, extra=["--key", str(DEV_KEY),
+                                         "--security-counter", "3"])
+    header, body, _crc = mkimage.read_image(image)
+    assert struct.unpack_from("<H", header, 4)[0] == mkimage.HEADER_VERSION
+    counter, key_id = struct.unpack_from("<II", header, 88)
+    assert counter == 3
+    key = mkimage.load_key(DEV_KEY)
+    assert key_id == mkimage.key_id(mkimage.public_point(key))
+    assert mkimage.signature_valid(header, key)
+
+    assert mkimage.inspect(image, DEV_KEY) == 0
+    assert "signature     : valid" in capsys.readouterr().out
+
+
+def test_signature_detects_tampering(tmp_path):
+    import zlib
+    image = _make_image(tmp_path, extra=["--key", str(DEV_KEY)])
+    data = bytearray(image.read_bytes())
+    key = mkimage.load_key(DEV_KEY)
+
+    # Raise the security counter and fix the CRC: only the signature
+    # catches it.
+    tampered = bytearray(data)
+    struct.pack_into("<I", tampered, 88, 99)
+    struct.pack_into("<I", tampered, 252, zlib.crc32(tampered[:252]))
+    assert not mkimage.signature_valid(bytes(tampered[:256]), key)
+    bad = tmp_path / "bad.img"
+    bad.write_bytes(tampered)
+    assert mkimage.inspect(bad, DEV_KEY) == 1
+
+    # A changed body breaks the signed SHA-256 even with matching CRCs.
+    tampered = bytearray(data)
+    tampered[256 + 20] ^= 0xFF
+    struct.pack_into("<I", tampered, 20, zlib.crc32(tampered[256:]))
+    struct.pack_into("<I", tampered, 252, zlib.crc32(tampered[:252]))
+    bad.write_bytes(tampered)
+    try:
+        mkimage.read_image(bad)
+    except ValueError as error:
+        assert "SHA-256" in str(error)
+    else:
+        raise AssertionError("SHA-256 mismatch not detected")
+
+    # A different key is reported as such.
+    other = tmp_path / "other.pem"
+    mkimage.generate_key(other)
+    assert mkimage.inspect(image, other) == 1
+
+
+def test_sign_existing_unsigned_image(tmp_path):
+    unsigned = _make_image(tmp_path, "unsigned.img")
+    header, _body, _crc = mkimage.read_image(unsigned)
+    assert struct.unpack_from("<H", header, 4)[0] == \
+        mkimage.HEADER_VERSION_UNSIGNED
+
+    signed = tmp_path / "signed.img"
+    old = sys.argv
+    sys.argv = ["mkimage.py", "--sign", str(unsigned), "--key", str(DEV_KEY),
+                "--security-counter", "0x10", "--output", str(signed)]
+    try:
+        assert mkimage.main() == 0
+    finally:
+        sys.argv = old
+    header, body, _crc = mkimage.read_image(signed)
+    assert body == unsigned.read_bytes()[256:]
+    assert struct.unpack_from("<I", header, 88)[0] == 16
+    assert mkimage.signature_valid(header, mkimage.load_key(DEV_KEY))
+    # Everything before the version 2 fields is unchanged except the
+    # header version.
+    original = unsigned.read_bytes()
+    assert header[:4] == original[:4] and header[6:88] == original[6:88]
+
+
+def test_exported_pubkey_matches_committed_source(tmp_path):
+    key = mkimage.load_key(DEV_KEY)
+    committed = (TOOLS.parent / "keys" / "dev_pubkey.c").read_text()
+    generated = mkimage.pubkey_c_source(key, DEV_KEY.name)
+    assert generated == committed
+
+
+def test_update_begin_carries_signed_header(tmp_path):
+    image_path = _make_image(tmp_path, extra=["--key", str(DEV_KEY),
+                                              "--security-counter", "5"])
+    image = bootctl.parse_image(image_path)
+    assert image["header_version"] == 2
+    assert image["security_counter"] == 5
+
+    device = FakeBoot()
+    device.start()
+    try:
+        link = bootctl.Link(device.slave_name, 115200, 0.5,
+                            auto_enter=False)
+        try:
+            link.hello()
+            bootctl.send_update_begin(link, image)
+        finally:
+            link.close()
+    finally:
+        device.stop.set()
+        device.join(timeout=2)
+    # BOOT rebuilds exactly the header that was signed.
+    assert device.begin_header == image_path.read_bytes()[:256]

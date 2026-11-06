@@ -4,7 +4,8 @@
  * Author:  Sandesh Ghimire <sandesh@soccentric.com>
  * Date:    2026-11-03
  * Target:  STM32F767ZIT6
- * SRS:     SEL-001..SEL-005, SWP-001, TRY-001..TRY-008, HND-003
+ * SRS:     SEL-001..SEL-005, SWP-001, TRY-001..TRY-008, HND-003,
+ *          BSAFE-006
  */
 
 #ifndef SELECTION_H
@@ -53,6 +54,7 @@
 typedef struct {
     bool header_present;
     bool header_valid;
+    boot_header_status_t header_status;   /* BSAFE-006 diagnostics      */
     bool verified;
     bool activated;
     bool confirmed;
@@ -61,6 +63,8 @@ typedef struct {
     bool vectors_ok;
     bool crc_checked;
     bool crc_ok;
+    bool digest_ok;      /* BSAFE-006: SHA-256 of the slot matches       */
+    bool below_floor;    /* BSAFE-006: security counter was superseded   */
     bool valid;
     uint32_t sequence;
     uint32_t rejected_reason;
@@ -99,6 +103,13 @@ void boot_selection_refresh_slots(boot_selection_t *selection);
  * decision on every later scan. */
 void boot_selection_mark_rejected(boot_selection_t *selection,
                                   boot_slot_t slot, uint32_t reason);
+
+/* BSAFE-006 anti-rollback: the highest security counter among slots with
+ * an authentic header that the application has CONFIRMED and that are not
+ * rejected.  No image below it is booted, activated or accepted by
+ * UpdateBegin.  The floor lives in the signed headers themselves, so it
+ * needs no OTP or extra flash; it rises when a newer image is confirmed. */
+uint32_t boot_selection_security_floor(const boot_selection_t *selection);
 
 /* Highest sequence number among valid slots (SEL-002). */
 void boot_selection_choose(boot_selection_t *selection);

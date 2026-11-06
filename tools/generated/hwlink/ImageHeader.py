@@ -139,7 +139,34 @@ class ImageHeader(object):
             return self._tab.Get(flatbuffers.number_types.Uint32Flags, o + self._tab.Pos)
         return 0
 
-def ImageHeaderStart(builder): builder.StartObject(13)
+    # ImageHeader
+    def Extension(self, j):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(30))
+        if o != 0:
+            a = self._tab.Vector(o)
+            return self._tab.Get(flatbuffers.number_types.Uint8Flags, a + flatbuffers.number_types.UOffsetTFlags.py_type(j * 1))
+        return 0
+
+    # ImageHeader
+    def ExtensionAsNumpy(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(30))
+        if o != 0:
+            return self._tab.GetVectorAsNumpy(flatbuffers.number_types.Uint8Flags, o)
+        return 0
+
+    # ImageHeader
+    def ExtensionLength(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(30))
+        if o != 0:
+            return self._tab.VectorLen(o)
+        return 0
+
+    # ImageHeader
+    def ExtensionIsNone(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(30))
+        return o == 0
+
+def ImageHeaderStart(builder): builder.StartObject(14)
 def Start(builder):
     return ImageHeaderStart(builder)
 def ImageHeaderAddMagic(builder, magic): builder.PrependUint32Slot(0, magic, 0)
@@ -184,6 +211,12 @@ def AddName(builder, name):
 def ImageHeaderAddHeaderCrc32(builder, headerCrc32): builder.PrependUint32Slot(12, headerCrc32, 0)
 def AddHeaderCrc32(builder, headerCrc32):
     return ImageHeaderAddHeaderCrc32(builder, headerCrc32)
+def ImageHeaderAddExtension(builder, extension): builder.PrependUOffsetTRelativeSlot(13, flatbuffers.number_types.UOffsetTFlags.py_type(extension), 0)
+def AddExtension(builder, extension):
+    return ImageHeaderAddExtension(builder, extension)
+def ImageHeaderStartExtensionVector(builder, numElems): return builder.StartVector(1, numElems, 1)
+def StartExtensionVector(builder, numElems):
+    return ImageHeaderStartExtensionVector(builder, numElems)
 def ImageHeaderEnd(builder): return builder.EndObject()
 def End(builder):
     return ImageHeaderEnd(builder)

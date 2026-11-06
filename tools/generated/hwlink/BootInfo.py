@@ -109,7 +109,28 @@ class BootInfo(object):
             return self._tab.String(o + self._tab.Pos)
         return None
 
-def BootInfoStart(builder): builder.StartObject(9)
+    # BootInfo
+    def SignedImages(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(22))
+        if o != 0:
+            return bool(self._tab.Get(flatbuffers.number_types.BoolFlags, o + self._tab.Pos))
+        return False
+
+    # BootInfo
+    def KeyId(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(24))
+        if o != 0:
+            return self._tab.Get(flatbuffers.number_types.Uint32Flags, o + self._tab.Pos)
+        return 0
+
+    # BootInfo
+    def SecurityFloor(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(26))
+        if o != 0:
+            return self._tab.Get(flatbuffers.number_types.Uint32Flags, o + self._tab.Pos)
+        return 0
+
+def BootInfoStart(builder): builder.StartObject(12)
 def Start(builder):
     return BootInfoStart(builder)
 def BootInfoAddActiveSlot(builder, activeSlot): builder.PrependUint8Slot(0, activeSlot, 0)
@@ -142,6 +163,15 @@ def AddBootVersion(builder, bootVersion):
 def BootInfoAddBootBuild(builder, bootBuild): builder.PrependUOffsetTRelativeSlot(8, flatbuffers.number_types.UOffsetTFlags.py_type(bootBuild), 0)
 def AddBootBuild(builder, bootBuild):
     return BootInfoAddBootBuild(builder, bootBuild)
+def BootInfoAddSignedImages(builder, signedImages): builder.PrependBoolSlot(9, signedImages, 0)
+def AddSignedImages(builder, signedImages):
+    return BootInfoAddSignedImages(builder, signedImages)
+def BootInfoAddKeyId(builder, keyId): builder.PrependUint32Slot(10, keyId, 0)
+def AddKeyId(builder, keyId):
+    return BootInfoAddKeyId(builder, keyId)
+def BootInfoAddSecurityFloor(builder, securityFloor): builder.PrependUint32Slot(11, securityFloor, 0)
+def AddSecurityFloor(builder, securityFloor):
+    return BootInfoAddSecurityFloor(builder, securityFloor)
 def BootInfoEnd(builder): return builder.EndObject()
 def End(builder):
     return BootInfoEnd(builder)

@@ -141,3 +141,9 @@ tests/host/host_tests
 
 # --- Jenkins Python tests virtualenv ---
 .venv/
+
+# --- Signing keys (BSAFE-006) --------------------------------
+# Only the published development key is tracked.  Product keys never
+# belong in the repository.
+*.pem
+!keys/dev-signing-key.pem

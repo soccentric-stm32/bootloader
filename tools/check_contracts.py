@@ -116,8 +116,33 @@ def main() -> int:
     elif c_minor.group(1) != py_minor.group(1):
         errors.append(f"protocol minor mismatch: C {c_minor.group(1)}, "
                       f"Python {py_minor.group(1)}")
-    if c_minor and c_minor.group(1) != "2":
-        errors.append("protocol minor is not 2 (P0-3/P0-1 fields)")
+    if c_minor and c_minor.group(1) != "3":
+        errors.append("protocol minor is not 3 (BSAFE-006 fields)")
+
+    # BSAFE-006: generated Python exposes the minor 3 fields, and the signed
+    # header layout in mkimage.py matches image.h.
+    for method in ("SignedImages", "KeyId", "SecurityFloor"):
+        if f"def {method}(" not in bootinfo:
+            errors.append(f"generated BootInfo.py lacks {method}")
+    image_header = (ROOT / "tools" / "generated" / "hwlink" /
+                    "ImageHeader.py").read_text(encoding="utf-8")
+    if "def Extension(" not in image_header:
+        errors.append("generated ImageHeader.py lacks Extension")
+    schema_text = (ROOT / "protocol" / "hwlink.fbs").read_text()
+    for field in ("extension", "signed_images", "key_id", "security_floor",
+                  "security_counter", "AUTH_FAILED", "ROLLBACK"):
+        if field not in schema_text:
+            errors.append(f"hwlink.fbs lacks {field}")
+    image_values = defines(ROOT / "src" / "common" / "image.h")
+    import mkimage as image_tool  # noqa: E402
+    for name, attr in (("BOOT_IMAGE_HEADER_VERSION", "HEADER_VERSION"),
+                       ("BOOT_IMAGE_HEADER_VERSION_UNSIGNED",
+                        "HEADER_VERSION_UNSIGNED"),
+                       ("BOOT_IMAGE_EXT_OFFSET", "EXT_OFFSET"),
+                       ("BOOT_IMAGE_EXT_SIZE", "EXT_SIZE"),
+                       ("BOOT_IMAGE_SIGNED_SIZE", "SIGNED_SIZE")):
+        if image_values.get(name) != getattr(image_tool, attr):
+            errors.append(f"mkimage.{attr} != BOOT {name}")
 
     # P1-4: factory metadata layout must stay identical to Appendix B.
     import mkimage  # noqa: E402
@@ -143,7 +168,7 @@ def main() -> int:
         for error in errors:
             print(f"contract: {error}", file=sys.stderr)
         return 1
-    print(f"contract: layout, schema and protocol minor 2 agree"
+    print(f"contract: layout, schema and protocol minor 3 agree"
           + (f" across {len(args.app_repo)} application repo(s)"
              if args.app_repo else ""))
     return 0

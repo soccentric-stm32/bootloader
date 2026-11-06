@@ -1,1 +1,3 @@
 pyserial>=3.5
+# BSAFE-006: image signing in mkimage.py (and the signing tests).
+cryptography>=41

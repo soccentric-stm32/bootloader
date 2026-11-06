@@ -556,6 +556,8 @@ __flatbuffers_define_integer_type(hwlink_Error, hwlink_Error_enum_t, 16)
 #define hwlink_Error_FLASH_ERROR ((hwlink_Error_enum_t)UINT16_C(11))
 #define hwlink_Error_CRC_MISMATCH ((hwlink_Error_enum_t)UINT16_C(12))
 #define hwlink_Error_WRONG_FLASH_MODE ((hwlink_Error_enum_t)UINT16_C(13))
+#define hwlink_Error_AUTH_FAILED ((hwlink_Error_enum_t)UINT16_C(14))
+#define hwlink_Error_ROLLBACK ((hwlink_Error_enum_t)UINT16_C(15))
 
 static inline const char *hwlink_Error_name(hwlink_Error_enum_t value)
 {
@@ -574,6 +576,8 @@ static inline const char *hwlink_Error_name(hwlink_Error_enum_t value)
     case hwlink_Error_FLASH_ERROR: return "FLASH_ERROR";
     case hwlink_Error_CRC_MISMATCH: return "CRC_MISMATCH";
     case hwlink_Error_WRONG_FLASH_MODE: return "WRONG_FLASH_MODE";
+    case hwlink_Error_AUTH_FAILED: return "AUTH_FAILED";
+    case hwlink_Error_ROLLBACK: return "ROLLBACK";
     default: return "";
     }
 }
@@ -595,6 +599,8 @@ static inline int hwlink_Error_is_known_value(hwlink_Error_enum_t value)
     case hwlink_Error_FLASH_ERROR: return 1;
     case hwlink_Error_CRC_MISMATCH: return 1;
     case hwlink_Error_WRONG_FLASH_MODE: return 1;
+    case hwlink_Error_AUTH_FAILED: return 1;
+    case hwlink_Error_ROLLBACK: return 1;
     default: return 0;
     }
 }
@@ -1130,6 +1136,7 @@ __flatbuffers_define_scalar_field(9, hwlink_ImageHeader, build_timestamp, flatbu
 __flatbuffers_define_vector_field(10, hwlink_ImageHeader, git_commit, flatbuffers_uint8_vec_t, 0)
 __flatbuffers_define_string_field(11, hwlink_ImageHeader, name, 0)
 __flatbuffers_define_scalar_field(12, hwlink_ImageHeader, header_crc32, flatbuffers_uint32, uint32_t, UINT32_C(0))
+__flatbuffers_define_vector_field(13, hwlink_ImageHeader, extension, flatbuffers_uint8_vec_t, 0)
 
 struct hwlink_BootSlotInfo_table { uint8_t unused__; };
 
@@ -1153,6 +1160,7 @@ __flatbuffers_define_string_field(10, hwlink_BootSlotInfo, git_commit, 0)
 __flatbuffers_define_string_field(11, hwlink_BootSlotInfo, name, 0)
 __flatbuffers_define_scalar_field(12, hwlink_BootSlotInfo, image_size, flatbuffers_uint32, uint32_t, UINT32_C(0))
 __flatbuffers_define_string_field(13, hwlink_BootSlotInfo, detail, 0)
+__flatbuffers_define_scalar_field(14, hwlink_BootSlotInfo, security_counter, flatbuffers_uint32, uint32_t, UINT32_C(0))
 
 struct hwlink_BootInfo_table { uint8_t unused__; };
 
@@ -1171,6 +1179,9 @@ __flatbuffers_define_scalar_field(5, hwlink_BootInfo, active_valid, flatbuffers_
 __flatbuffers_define_scalar_field(6, hwlink_BootInfo, target_slot, hwlink_Slot, hwlink_Slot_enum_t, UINT8_C(0))
 __flatbuffers_define_string_field(7, hwlink_BootInfo, boot_version, 0)
 __flatbuffers_define_string_field(8, hwlink_BootInfo, boot_build, 0)
+__flatbuffers_define_scalar_field(9, hwlink_BootInfo, signed_images, flatbuffers_bool, flatbuffers_bool_t, UINT8_C(0))
+__flatbuffers_define_scalar_field(10, hwlink_BootInfo, key_id, flatbuffers_uint32, uint32_t, UINT32_C(0))
+__flatbuffers_define_scalar_field(11, hwlink_BootInfo, security_floor, flatbuffers_uint32, uint32_t, UINT32_C(0))
 
 struct hwlink_UpdateBegin_table { uint8_t unused__; };
 

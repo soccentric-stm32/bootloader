@@ -32,7 +32,9 @@ typedef enum {
     BOOT_ERR_OUT_OF_ORDER   = 10,
     BOOT_ERR_FLASH_ERROR    = 11,
     BOOT_ERR_CRC_MISMATCH   = 12,
-    BOOT_ERR_WRONG_FLASH_MODE = 13
+    BOOT_ERR_WRONG_FLASH_MODE = 13,
+    BOOT_ERR_AUTH_FAILED    = 14,   /* BSAFE-006, protocol minor 3 */
+    BOOT_ERR_ROLLBACK       = 15
 } boot_error_t;
 
 typedef struct {
@@ -52,6 +54,10 @@ typedef struct {
     uint32_t name_len;
     uint32_t header_crc32;
     bool     header_crc32_present;
+    /* Protocol minor 3: header bytes 88..251 verbatim (security counter,
+     * key id, image SHA-256, signature).  Absent from older hosts. */
+    uint8_t  extension[BOOT_IMAGE_EXT_SIZE];
+    bool     extension_present;
 } boot_image_desc_t;
 
 typedef struct {
@@ -78,7 +84,9 @@ void boot_update_set_progress_cb(boot_progress_fn callback);
 
 /* UPD-002: validate the header, erase the inactive metadata sector, write
  * the header record.  P0-1: refuses to touch the rollback slot while the
- * active slot is still on trial; force is the bench-only override. */
+ * active slot is still on trial; force is the bench-only override.
+ * BSAFE-006: the signature and the anti-rollback counter are checked
+ * before anything is erased; force does not bypass them. */
 boot_error_t boot_update_begin(boot_update_t *update,
                                const boot_selection_t *selection,
                                const boot_image_desc_t *desc, bool force,
@@ -90,7 +98,8 @@ boot_error_t boot_update_data(boot_update_t *update, uint32_t offset,
                               uint32_t *next_offset,
                               char *detail, size_t detail_cap);
 
-/* UPD-006: verify vectors and CRC read back from flash, write VERIFIED. */
+/* UPD-006: verify vectors, CRC and (BSAFE-006) SHA-256 read back from
+ * flash, write VERIFIED. */
 boot_error_t boot_update_end(boot_update_t *update, uint32_t *image_crc,
                              char *detail, size_t detail_cap);
 

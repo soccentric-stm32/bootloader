@@ -4,7 +4,7 @@
  * Author:  Sandesh Ghimire <sandesh@soccentric.com>
  * Date:    2026-11-03
  * Target:  STM32F767ZIT6
- * SRS:     SEL-001..SEL-005, TRY-002/003/005/006/008, HND-003
+ * SRS:     SEL-001..SEL-005, TRY-002/003/005/006/008, HND-003, BSAFE-006
  *
  * Trial state, the stay request, the hand-over record and the last outcome
  * live in RTC backup registers 0-3.  VBAT is tied to VDD, so they survive a
@@ -37,7 +37,32 @@ void boot_selection_init(void)
 static bool metadata_ok(const boot_slot_info_t *info)
 {
     return info->header_valid && info->activated && info->sequence_valid &&
-           !info->rejected;
+           !info->rejected && !info->below_floor;
+}
+
+uint32_t boot_selection_security_floor(const boot_selection_t *selection)
+{
+    uint32_t floor = 0U;
+
+    for (uint32_t i = 0U; i < 2U; i++) {
+        const boot_slot_info_t *info = &selection->slot[i];
+        if (info->header_valid && info->confirmed && !info->rejected &&
+            info->header.security_counter > floor) {
+            floor = info->header.security_counter;
+        }
+    }
+    return floor;
+}
+
+static void apply_security_floor(boot_selection_t *selection)
+{
+    uint32_t floor = boot_selection_security_floor(selection);
+
+    for (uint32_t i = 0U; i < 2U; i++) {
+        boot_slot_info_t *info = &selection->slot[i];
+        info->below_floor = info->header_valid &&
+                            info->header.security_counter < floor;
+    }
 }
 
 static void apply_ram_rejections(boot_selection_t *selection)
@@ -64,7 +89,8 @@ static void scan_metadata(boot_selection_t *selection)
         info->header_present = boot_meta_header_present(slot);
         if (info->header_present &&
             boot_meta_header_read(slot, &info->header)) {
-            info->header_valid = boot_image_header_valid(&info->header);
+            info->header_status = boot_image_header_check(&info->header);
+            info->header_valid = info->header_status == BOOT_HEADER_OK;
         }
 
         (void)boot_meta_read_record(slot, BOOT_META_VERIFIED_OFFSET,
@@ -116,7 +142,11 @@ static void check_crc(boot_selection_t *selection, boot_slot_t slot)
     boot_slot_info_t *info = &selection->slot[slot];
     info->crc_checked = true;
     info->crc_ok = boot_image_crc_matches(slot, &info->header);
-    info->valid = info->vectors_ok && info->crc_ok;
+    /* The cheap hardware CRC catches corruption first; the SHA-256 is only
+     * computed for an image that already passed it. */
+    info->digest_ok = info->crc_ok &&
+                      boot_image_digest_matches(slot, &info->header);
+    info->valid = info->vectors_ok && info->crc_ok && info->digest_ok;
 }
 
 static void scan_slots(boot_selection_t *selection, bool verify_all)
@@ -127,6 +157,7 @@ static void scan_slots(boot_selection_t *selection, bool verify_all)
 
     scan_metadata(selection);
     apply_ram_rejections(selection);
+    apply_security_floor(selection);
     check_vectors(selection);
 
     if (verify_all) {

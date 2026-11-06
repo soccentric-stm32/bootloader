@@ -131,7 +131,9 @@ bool boot_flash_erase_slot_sector(boot_slot_t slot, uint32_t index)
         index >= BOOT_SLOT_SECTOR_COUNT) {
         return false;
     }
-    uint8_t *dst = fake_flash_ptr(boot_slot_base(slot) +
+    /* boot_slot_sector_offset() is relative to the bank, like the
+     * physical sector number the real driver erases. */
+    uint8_t *dst = fake_flash_ptr(boot_bank_base(slot) +
                                   boot_slot_sector_offset(index));
     if (dst == NULL) {
         return false;

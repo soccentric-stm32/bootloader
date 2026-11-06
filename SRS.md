@@ -227,7 +227,7 @@ An image file is a 256-byte header followed by the application binary
 | Offset | Size | Field | Meaning |
 |---|---|---|---|
 | 0 | 4 | `magic` | `0x48574249` (`"IBWH"` little-endian) |
-| 4 | 2 | `header_version` | Format version of this header, `1` |
+| 4 | 2 | `header_version` | `2` = signed (BSAFE-006), `1` = unsigned (accepted only by a build with `BOOT_SIGNED_IMAGES=OFF`) |
 | 6 | 2 | `header_size` | `256` |
 | 8 | 4 | `image_type` | `1` = application (other values reserved) |
 | 12 | 4 | `version` | Semantic version, `major << 24 \| minor << 16 \| patch` |
@@ -238,8 +238,16 @@ An image file is a 256-byte header followed by the application binary
 | 32 | 4 | `build_timestamp` | Unix time of the build |
 | 36 | 20 | `git_commit` | Git commit hash (binary SHA-1) |
 | 56 | 32 | `name` | Zero-padded ASCII product name, e.g. `"stm32-application"` |
-| 88 | 164 | `reserved` | Zero; reserved for a future signature |
+| 88 | 4 | `security_counter` | Anti-rollback counter (BSAFE-007); zero in version 1 |
+| 92 | 4 | `key_id` | First four bytes of SHA-256 of the signing public key, little-endian |
+| 96 | 32 | `image_sha256` | SHA-256 of the binary |
+| 128 | 64 | `signature` | ECDSA P-256 signature `r ‖ s` (big-endian) over SHA-256 of bytes 0–127 |
+| 192 | 60 | `reserved` | Zero |
 | 252 | 4 | `header_crc32` | CRC32 of bytes 0–251 |
+
+Version 1 headers have zeros in bytes 88–251.  The signature covers every
+field before it, including `image_sha256`, so one signature authenticates the
+header and the binary.
 
 ### 5.2 Image requirements
 
@@ -251,7 +259,7 @@ An image file is a 256-byte header followed by the application binary
 | IMG-004 | BOOT shall check `image_crc32` over the programmed slot contents (read back from flash, not from the receive buffer) before an image can be activated. | T |
 | IMG-005 | BOOT shall check `image_crc32` of the selected slot again on every boot before handing over (§6.2). | T |
 | IMG-006 | BOOT shall store the header unchanged in the slot's metadata sector, so that `GetBootInfo` can report the version, build time, commit and name of both slots. | T |
-| IMG-007 | BOOT shall accept any `version`, including one older than the other slot (no anti-rollback). The GUI warns about downgrades ([GUI] FW-008). | T |
+| IMG-007 | BOOT shall accept any `version`, including one older than the other slot; downgrade protection uses `security_counter` instead (BSAFE-007). The GUI warns about downgrades ([GUI] FW-008). | T |
 
 ---
 
@@ -295,7 +303,7 @@ address and size in their linker scripts.
 
 | ID | Requirement | Method |
 |---|---|---|
-| SEL-001 | A slot is **valid** when its metadata contains a header record that passes IMG-001…IMG-003, the slot contents pass the CRC check of IMG-005, and the slot has an `ACTIVATED` record and no `REJECTED` record. | T |
+| SEL-001 | A slot is **valid** when its metadata contains a header record that passes IMG-001…IMG-003 and BSAFE-006, the slot contents pass the CRC check of IMG-005 and the SHA-256 check of BSAFE-006, its `security_counter` is not below the floor (BSAFE-007), and the slot has an `ACTIVATED` record and no `REJECTED` record. | T |
 | SEL-002 | Among valid slots, BOOT shall boot the one with the highest activation sequence number (§9, `Activate`). | T |
 | SEL-003 | When no slot is valid, BOOT shall stay in update mode indefinitely (LD3 on, BGEN-008). | T |
 | SEL-004 | Sequence-number comparison shall handle the case where only one slot has ever been written, and shall treat erased (`0xFFFFFFFF`) sequence fields as invalid. | T |
@@ -363,11 +371,11 @@ bootloader message set below. Message names refer to the FlatBuffers schema
 | ID | Requirement | Method |
 |---|---|---|
 | UPD-001 | BOOT shall only write the **inactive** slot: the slot that is not currently selected by SEL-002. If no slot is valid, slot A shall be written. | T |
-| UPD-002 | `UpdateBegin` shall check the header (IMG-001…IMG-002). On success BOOT shall erase the inactive bank's metadata sector and program the header record into it, then reply `Ack`. | T |
+| UPD-002 | `UpdateBegin` shall check the header (IMG-001…IMG-002, BSAFE-006, BSAFE-007). On success BOOT shall erase the inactive bank's metadata sector and program the header record into it, then reply `Ack`. | T |
 | UPD-003 | BOOT shall erase slot sectors lazily: a sector is erased when the first `UpdateData` chunk that falls into it arrives. The reply to that chunk may therefore take up to the maximum 128 KB sector erase time [DS11532] plus margin; BOOT shall document the worst case (Appendix C, OPEN-B02). | T, A |
 | UPD-004 | `UpdateData` chunks shall carry an offset and 1 to 1024 bytes. BOOT shall accept only the next expected offset; a repeated chunk (same offset as the last acknowledged one) shall be acknowledged again without reprogramming; any other offset shall be answered with `Nak OUT_OF_ORDER` and the expected offset. | T |
 | UPD-005 | BOOT shall program flash in 32-bit words, verify each programmed word by read-back, and answer `Nak FLASH_ERROR` with the address on any mismatch or flash error flag. | T |
-| UPD-006 | `UpdateEnd` shall be accepted only after exactly `image_size` bytes; BOOT shall then run IMG-003 and IMG-004 and reply with `UpdateResult`. On success it shall program a `VERIFIED` record. | T |
+| UPD-006 | `UpdateEnd` shall be accepted only after exactly `image_size` bytes; BOOT shall then run IMG-003, IMG-004 and the SHA-256 check of BSAFE-006 and reply with `UpdateResult`. On success it shall program a `VERIFIED` record. | T |
 | UPD-007 | `Activate` shall be accepted only for a `VERIFIED` slot. BOOT shall program an `ACTIVATED` record with sequence number = (highest sequence number of the other slot) + 1, set the trial counter to 0 for that slot, reply `Ack`, and reset. | T |
 | UPD-008 | Losing power or the link at any point during an update shall leave the active slot untouched and bootable; the partly written slot shall be invalid (no `ACTIVATED` record). | T |
 | UPD-009 | BOOT shall reply to every request within 100 ms, except UPD-003 sector erases and UPD-006 verification, which shall report progress with `Progress` events at least every 500 ms. | T |
@@ -413,7 +421,9 @@ repeated in each application SRS (e.g. [DEMO] §4).
 | BSAFE-003 | The flash wrapper shall allow erase and program only in the inactive slot and the inactive bank's metadata sector, with one exception: the `CONFIRMED`/`REJECTED` records may be programmed into either metadata sector. Every other address shall be rejected. | I, T |
 | BSAFE-004 | Metadata records shall be append-only: a word that has been programmed shall never be programmed again (Appendix B). | I |
 | BSAFE-005 | BOOT shall check `nDBANK = 0` at start-up. If the flash is in single-bank mode it shall not write flash at all, report `WRONG_FLASH_MODE` in `HelloReply`, and blink LD3. | T |
-| BSAFE-006 | Integrity is protected by CRC32 only. BOOT does not authenticate images; anyone with UART access can load an image. This limitation shall be stated in the user documentation. | I |
+| BSAFE-006 | With `BOOT_SIGNED_IMAGES=ON` (the default) BOOT shall accept only version 2 headers whose `key_id` matches its built-in public key and whose ECDSA P-256 signature verifies. It shall check this at `UpdateBegin` before erasing anything, at `Activate` and for every slot on every boot, and shall check `image_sha256` over the slot contents read back from flash at `UpdateEnd`, at `Activate` and before handing over. Failures are reported as `AUTH_FAILED`. `force` does not bypass these checks. | T |
+| BSAFE-007 | The anti-rollback floor is the highest `security_counter` among slots with an authentic header, a `CONFIRMED` record and no `REJECTED` record. BOOT shall refuse `UpdateBegin` and `Activate` for an image below the floor (`ROLLBACK`) and shall not boot a slot below it. The floor is held in the signed headers themselves; no OTP or option byte is written (BSAFE-001/002). | T |
+| BSAFE-008 | The public key is compiled in from `BOOT_SIGNING_KEY_SOURCE`. The default is the published development key in `keys/`; the build shall warn when it is used, and product builds shall supply their own key. Without read-out protection an attacker with SWD access can still replace BOOT itself; signing protects the UART update path and the boot-time check, not a debugger. | I |
 
 ---
 
@@ -454,7 +464,7 @@ repeated in each application SRS (e.g. [DEMO] §4).
 | Protocol | UPD-001…010 | T |
 | Hand-over | HND-001…005 | T |
 | App contract | APP-001…007 | I, T (per app) |
-| Safety | BSAFE-001…006 | I, T |
+| Safety | BSAFE-001…008 | I, T |
 | Non-functional | BNFR-001…006 | T, I |
 | Host tools | BHOST-001…004 | T, D |
 

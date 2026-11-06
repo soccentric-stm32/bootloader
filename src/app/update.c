@@ -4,7 +4,7 @@
  * Author:  Sandesh Ghimire <sandesh@soccentric.com>
  * Date:    2026-11-03
  * Target:  STM32F767ZIT6
- * SRS:     UPD-001..UPD-010, IMG-001..IMG-006
+ * SRS:     UPD-001..UPD-010, IMG-001..IMG-006, BSAFE-006
  *
  * Only the inactive slot is written (UPD-001).  Slot sectors are erased when
  * the first chunk that falls into them arrives (UPD-003).  Chunks may have
@@ -77,7 +77,8 @@ static bool validate_desc(const boot_image_desc_t *desc, boot_error_t *error,
                           char *detail, size_t cap)
 {
     if (desc->magic != BOOT_IMAGE_MAGIC ||
-        desc->header_version != BOOT_IMAGE_HEADER_VERSION ||
+        (desc->header_version != BOOT_IMAGE_HEADER_VERSION &&
+         desc->header_version != BOOT_IMAGE_HEADER_VERSION_UNSIGNED) ||
         desc->header_size != BOOT_IMAGE_HEADER_SIZE ||
         desc->image_type != BOOT_IMAGE_TYPE_APP) {
         *error = BOOT_ERR_BAD_HEADER;
@@ -91,6 +92,31 @@ static bool validate_desc(const boot_image_desc_t *desc, boot_error_t *error,
         return false;
     }
     return true;
+}
+
+static boot_error_t check_header(const boot_image_header_t *header,
+                                 char *detail, size_t cap)
+{
+    switch (boot_image_header_check(header)) {
+    case BOOT_HEADER_OK:
+        return BOOT_ERR_NONE;
+    case BOOT_HEADER_BAD_LAYOUT:
+        detail_set(detail, cap, "load address or image size");
+        return BOOT_ERR_BAD_LAYOUT;
+    case BOOT_HEADER_UNSIGNED:
+        detail_set(detail, cap, "image is not signed");
+        return BOOT_ERR_AUTH_FAILED;
+    case BOOT_HEADER_WRONG_KEY:
+        detail_set(detail, cap, "image is signed with a different key");
+        return BOOT_ERR_AUTH_FAILED;
+    case BOOT_HEADER_BAD_SIGNATURE:
+        detail_set(detail, cap, "image signature is invalid");
+        return BOOT_ERR_AUTH_FAILED;
+    case BOOT_HEADER_BAD_FORMAT:
+    default:
+        detail_set(detail, cap, "magic, version, size, type or CRC");
+        return BOOT_ERR_BAD_HEADER;
+    }
 }
 
 boot_error_t boot_update_begin(boot_update_t *update,
@@ -123,6 +149,7 @@ boot_error_t boot_update_begin(boot_update_t *update,
 
     boot_image_header_t header;
     memset(&header, 0, sizeof(header));
+    header.header_version  = desc->header_version;
     header.version         = desc->version;
     header.image_size      = desc->image_size;
     header.image_crc32     = desc->image_crc32;
@@ -130,6 +157,10 @@ boot_error_t boot_update_begin(boot_update_t *update,
     header.build_timestamp = desc->build_timestamp;
     memcpy(header.git_commit, desc->git_commit, sizeof(header.git_commit));
     memcpy(header.name, desc->name, sizeof(header.name));
+    if (desc->extension_present) {
+        memcpy((uint8_t *)&header + BOOT_IMAGE_EXT_OFFSET, desc->extension,
+               BOOT_IMAGE_EXT_SIZE);
+    }
     boot_image_header_finalize(&header);
 
     /* IMG-001: when the host sends the header CRC, require it to match the
@@ -139,6 +170,19 @@ boot_error_t boot_update_begin(boot_update_t *update,
         desc->header_crc32 != header.header_crc32) {
         detail_set(detail, detail_cap, "header CRC32 mismatch");
         return BOOT_ERR_BAD_HEADER;
+    }
+
+    /* BSAFE-006: authenticate before erasing anything, so an unsigned or
+     * foreign image cannot even destroy the inactive slot. */
+    error = check_header(&header, detail, detail_cap);
+    if (error != BOOT_ERR_NONE) {
+        return error;
+    }
+    if (selection != NULL &&
+        header.security_counter < boot_selection_security_floor(selection)) {
+        detail_set(detail, detail_cap,
+                   "security counter below the installed image");
+        return BOOT_ERR_ROLLBACK;
     }
 
     boot_slot_t slot = boot_flash_target_slot();
@@ -179,7 +223,9 @@ static bool ensure_sectors_erased(boot_update_t *update, uint32_t offset,
     uint32_t last  = offset + len - 1U;
 
     for (uint32_t i = 0U; i < BOOT_SLOT_SECTOR_COUNT; i++) {
-        uint32_t base = boot_slot_sector_offset(i);
+        /* offset is relative to the slot; boot_slot_sector_offset() is
+         * relative to the bank, so remove the slot's own offset. */
+        uint32_t base = boot_slot_sector_offset(i) - BOOT_SLOT_OFFSET;
         uint32_t size = boot_slot_sector_size(i);
         if (last < base || first >= (base + size)) {
             continue;
@@ -358,6 +404,11 @@ boot_error_t boot_update_end(boot_update_t *update, uint32_t *image_crc,
         detail_set(detail, detail_cap, "image CRC32 mismatch");
         return BOOT_ERR_CRC_MISMATCH;
     }
+    /* BSAFE-006: the signed header carries the image SHA-256. */
+    if (!boot_image_digest_matches(update->slot, &update->header)) {
+        detail_set(detail, detail_cap, "image SHA-256 mismatch");
+        return BOOT_ERR_AUTH_FAILED;
+    }
     progress("update", update->image_size, update->image_size);
 
     if (!boot_meta_write_record(update->slot, BOOT_META_VERIFIED_OFFSET,
@@ -420,6 +471,12 @@ boot_error_t boot_update_activate(boot_update_t *update,
         !boot_image_valid(slot, &header)) {
         detail_set(detail, detail_cap, "slot is no longer valid");
         return BOOT_ERR_BAD_STATE;
+    }
+    if (selection != NULL &&
+        header.security_counter < boot_selection_security_floor(selection)) {
+        detail_set(detail, detail_cap,
+                   "security counter below the installed image");
+        return BOOT_ERR_ROLLBACK;
     }
 
     if (selection != NULL && selection->active_valid &&

@@ -2,7 +2,7 @@
 
 | Tool | Purpose |
 |---|---|
-| `mkimage.py` | Wrap an application `.bin` in the 256-byte BOOT image header; `--inspect` checks an image file; `--metadata` builds a 16 KB metadata sector and `--factory-hex` combines BOOT + A/B + metadata (P1-4). |
+| `mkimage.py` | Wrap an application `.bin` in the 256-byte BOOT image header (`--key` signs it, BSAFE-006); `--sign` signs an existing image; `--inspect [--key]` checks an image file and its signature; `--genkey` and `--export-pubkey` manage signing keys; `--metadata` builds a 16 KB metadata sector and `--factory-hex` combines BOOT + A/B + metadata (P1-4). |
 | `bootctl.py` | HWLINK command-line updater: `info`, `update` (`--both`, `--a/--b`, `--json`), `activate`, `enter`, `wait`, `reset`, `set-baud`. |
 | `check_contracts.py` | Cross-check layout constants, generated schema and an application repo's `boot_contract.h`/`hwlink.fbs`. |
 | `package_hwlink.py` | Publish the canonical `hwlink.fbs`, generated Python package, `mkimage.py`, `boot_layout.h` and vendored runtime bundle (P3-8). |

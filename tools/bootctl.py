@@ -24,6 +24,7 @@
 
 import argparse
 import glob
+import hashlib
 import json
 import pathlib
 import struct
@@ -49,7 +50,7 @@ from hwlink.Slot import Slot  # noqa: E402
 from hwlink.TrialState import TrialState  # noqa: E402
 
 PROTOCOL_MAJOR = 1
-PROTOCOL_MINOR = 2
+PROTOCOL_MINOR = 3
 HWLINK_FLAG_RESPONSE = 1 << 0
 HWLINK_FLAG_EVENT = 1 << 1
 MAX_FRAME = 2048
@@ -95,6 +96,8 @@ def error_name(value: int) -> str:
         Error.FLASH_ERROR: "FLASH_ERROR",
         Error.CRC_MISMATCH: "CRC_MISMATCH",
         Error.WRONG_FLASH_MODE: "WRONG_FLASH_MODE",
+        Error.AUTH_FAILED: "AUTH_FAILED",
+        Error.ROLLBACK: "ROLLBACK",
     }
     return names.get(value, f"ERROR_{value}")
 
@@ -395,7 +398,10 @@ def parse_image(path: pathlib.Path):
      name, _reserved, header_crc32) = fields
     if magic != IMAGE_MAGIC:
         raise LinkError("image: bad magic")
-    if header_version != 1 or header_size != HEADER_SIZE or image_type != 1:
+    # BSAFE-006: version 2 is signed, version 1 unsigned.  BOOT decides
+    # whether an unsigned image is acceptable.
+    if header_version not in (1, 2) or header_size != HEADER_SIZE or \
+            image_type != 1:
         raise LinkError("image: unsupported header version, size or type")
     if load_address != LOAD_ADDRESS:
         raise LinkError("image: wrong load address")
@@ -408,7 +414,15 @@ def parse_image(path: pathlib.Path):
         raise LinkError("image: image_size does not match the file body")
     if zlib.crc32(body) & 0xFFFFFFFF != image_crc32:
         raise LinkError("image: image CRC32 mismatch")
+    security_counter, key_id = struct.unpack_from("<II", data, 88)
+    if header_version == 2 and hashlib.sha256(body).digest() != data[96:128]:
+        raise LinkError("image: image SHA-256 mismatch")
     return {
+        "header_version": header_version,
+        # Header bytes 88..251, sent verbatim (protocol minor 3).
+        "extension": data[88:252],
+        "security_counter": security_counter,
+        "key_id": key_id,
         "version": version,
         "image_size": image_size,
         "image_crc32": image_crc32,
@@ -442,6 +456,7 @@ def boot_info_dict(reply, info) -> dict:
             "git_commit": text(slot.GitCommit()),
             "name": text(slot.Name()),
             "detail": text(slot.Detail()),
+            "security_counter": slot.SecurityCounter(),
         })
     return {
         "firmware": text(reply.FirmwareName()),
@@ -457,6 +472,9 @@ def boot_info_dict(reply, info) -> dict:
         "boot_build": text(info.BootBuild()),
         "last_outcome": outcome_name(info.LastOutcome()),
         "rejected_slot": slot_name(info.RejectedSlot()),
+        "signed_images": bool(info.SignedImages()),
+        "key_id": f"0x{info.KeyId():08x}",
+        "security_floor": info.SecurityFloor(),
         "slots": slots,
     }
 
@@ -607,6 +625,11 @@ def cmd_info(link: Link, args) -> int:
           f"({text(info.BootBuild())})")
     print(f"last outcome : {outcome_name(info.LastOutcome())}")
     print(f"rejected slot: {slot_name(info.RejectedSlot())}")
+    if info.SignedImages():
+        print(f"signing      : required, key id 0x{info.KeyId():08x}, "
+              f"security floor {info.SecurityFloor()}")
+    else:
+        print("signing      : not required (or BOOT older than minor 3)")
     for index in range(info.SlotsLength()):
         slot = info.Slots(index)
         print(f"slot {slot_name(slot.Slot())}: "
@@ -615,7 +638,8 @@ def cmd_info(link: Link, args) -> int:
               f"rejected={slot.Rejected()} seq={slot.Sequence()} "
               f"trial={slot.TrialCount()}")
         print(f"  version {version_text(slot.Version())}, "
-              f"size {slot.ImageSize()}, build {slot.BuildTimestamp()}")
+              f"size {slot.ImageSize()}, build {slot.BuildTimestamp()}, "
+              f"security counter {slot.SecurityCounter()}")
         print(f"  name {text(slot.Name())} commit {text(slot.GitCommit())}")
         print(f"  detail: {text(slot.Detail())}")
     return 0
@@ -626,9 +650,11 @@ def send_update_begin(link: Link, image, force: bool = False) -> None:
     git = builder.CreateByteVector(image["git_commit"])
     name = builder.CreateString(
         image["name"].rstrip(b"\0").decode("ascii", "replace"))
+    extension = builder.CreateByteVector(image.get("extension", bytes(164)))
     ImageHeader.ImageHeaderStart(builder)
     ImageHeader.ImageHeaderAddMagic(builder, IMAGE_MAGIC)
-    ImageHeader.ImageHeaderAddHeaderVersion(builder, 1)
+    ImageHeader.ImageHeaderAddHeaderVersion(builder,
+                                            image.get("header_version", 1))
     ImageHeader.ImageHeaderAddHeaderSize(builder, HEADER_SIZE)
     ImageHeader.ImageHeaderAddImageType(builder, 1)
     ImageHeader.ImageHeaderAddVersion(builder, image["version"])
@@ -640,6 +666,7 @@ def send_update_begin(link: Link, image, force: bool = False) -> None:
     ImageHeader.ImageHeaderAddGitCommit(builder, git)
     ImageHeader.ImageHeaderAddName(builder, name)
     ImageHeader.ImageHeaderAddHeaderCrc32(builder, image["header_crc32"])
+    ImageHeader.ImageHeaderAddExtension(builder, extension)
     header = ImageHeader.ImageHeaderEnd(builder)
 
     UpdateBegin.UpdateBeginStart(builder)
@@ -713,6 +740,11 @@ def print_image(image, path: str) -> None:
     vprint(f"  name         : {name}")
     vprint(f"  git commit   : {image['git_commit'].hex()}")
     vprint(f"  header crc32 : 0x{image['header_crc32']:08x}")
+    if image["header_version"] == 2:
+        vprint(f"  signed       : key id 0x{image['key_id']:08x}, "
+               f"security counter {image['security_counter']}")
+    else:
+        vprint("  signed       : no (version 1 header)")
     vprint(f"  body         : {len(image['body'])} B")
 
 

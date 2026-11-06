@@ -4,6 +4,13 @@
 (SRS-GUI-F767 Appendix A).  It is the single source for the C headers in
 `../src/protocol/generated` and the Python package in `../tools/generated`.
 
+Protocol minor 3 (BSAFE-006) appends `ImageHeader.extension` (header bytes
+88..251 verbatim: security counter, key id, image SHA-256 and signature),
+`BootSlotInfo.security_counter`, `BootInfo.signed_images`, `BootInfo.key_id`,
+`BootInfo.security_floor` and the errors `AUTH_FAILED` and `ROLLBACK`.  BOOT
+rebuilds the 256-byte header from the fields, so the extension must arrive
+unchanged for the signature to verify.
+
 Protocol minor 2 appends `BootInfo.active_valid`, `BootInfo.target_slot`,
 `BootInfo.boot_version`, `BootInfo.boot_build` and `UpdateBegin.force`.
 Hosts must use `target_slot` instead of guessing which slot BOOT will write,
@@ -39,7 +46,8 @@ The Python flatbuffers runtime is vendored in `../tools/vendor`.
 Protocol minor 1 appended `ImageHeader.header_crc32` (IMG-001).  The field
 is optional on the wire: older hosts may omit it and BOOT recomputes the
 header CRC from the remaining fields.  Protocol minor 2 appends the BootInfo
-and UpdateBegin fields listed above; `bootctl.py` reports minor 2.
+and UpdateBegin fields listed above, and minor 3 the signing fields;
+`bootctl.py` reports minor 3.
 
 `Message.body` is an append-only union: add new members at the end and raise
 the protocol minor version (LNK-013).  The file identifier is `HWLK`.

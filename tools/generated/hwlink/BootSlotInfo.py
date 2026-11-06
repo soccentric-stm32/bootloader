@@ -126,7 +126,14 @@ class BootSlotInfo(object):
             return self._tab.String(o + self._tab.Pos)
         return None
 
-def BootSlotInfoStart(builder): builder.StartObject(14)
+    # BootSlotInfo
+    def SecurityCounter(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(32))
+        if o != 0:
+            return self._tab.Get(flatbuffers.number_types.Uint32Flags, o + self._tab.Pos)
+        return 0
+
+def BootSlotInfoStart(builder): builder.StartObject(15)
 def Start(builder):
     return BootSlotInfoStart(builder)
 def BootSlotInfoAddSlot(builder, slot): builder.PrependUint8Slot(0, slot, 0)
@@ -171,6 +178,9 @@ def AddImageSize(builder, imageSize):
 def BootSlotInfoAddDetail(builder, detail): builder.PrependUOffsetTRelativeSlot(13, flatbuffers.number_types.UOffsetTFlags.py_type(detail), 0)
 def AddDetail(builder, detail):
     return BootSlotInfoAddDetail(builder, detail)
+def BootSlotInfoAddSecurityCounter(builder, securityCounter): builder.PrependUint32Slot(14, securityCounter, 0)
+def AddSecurityCounter(builder, securityCounter):
+    return BootSlotInfoAddSecurityCounter(builder, securityCounter)
 def BootSlotInfoEnd(builder): return builder.EndObject()
 def End(builder):
     return BootSlotInfoEnd(builder)

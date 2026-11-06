@@ -5,14 +5,18 @@
 # Author:  Sandesh Ghimire <sandesh@soccentric.com>
 # Date:    2026-11-03
 # Target:  NUCLEO-F767ZI
-# SRS:     BHOST-001, BHOST-002; SRS-BOOT-F767 section 5.1
+# SRS:     BHOST-001, BHOST-002, BSAFE-006; SRS-BOOT-F767 section 5.1
 #
 # Usage:
 #   tools/mkimage.py --input build/app.bin --output build/app.img \
 #       --version 0.1.0 --commit <40-hex> --timestamp <unix> \
-#       --name stm32-application
+#       --name stm32-application --key keys/dev-signing-key.pem
 #
-#   tools/mkimage.py --inspect build/app.img
+#   tools/mkimage.py --sign build/app.img --key signing-key.pem \
+#       --security-counter 3 --output build/app-signed.img
+#   tools/mkimage.py --inspect build/app.img [--key signing-key.pem]
+#   tools/mkimage.py --genkey signing-key.pem
+#   tools/mkimage.py --export-pubkey signing-key.pem --output pubkey.c
 #
 #   tools/mkimage.py --image build/app.img --metadata A \
 #       --output build/meta_a.bin
@@ -21,16 +25,34 @@
 #
 # The header is 256 bytes; the binary follows unchanged.  BOOT stores this
 # header in the slot metadata sector (IMG-006).
+#
+# BSAFE-006: with --key the header is version 2.  Bytes 88..251 then hold
+# the anti-rollback security counter, the key id, the SHA-256 of the binary
+# and an ECDSA P-256 signature (r || s, big-endian) over header bytes
+# 0..127.  Without --key the header is the unsigned version 1, which only a
+# BOOT built with BOOT_SIGNED_IMAGES=OFF accepts.  Signing needs the Python
+# "cryptography" package; everything else uses the standard library.
 
 import argparse
+import hashlib
 import pathlib
 import struct
 import sys
 import zlib
 
 MAGIC = 0x48574249          # "IBWH" little-endian
-HEADER_VERSION = 1
+HEADER_VERSION = 2          # signed (BSAFE-006)
+HEADER_VERSION_UNSIGNED = 1
 HEADER_SIZE = 256
+# Header version 2 fields (offsets inside the 256-byte header).
+SECURITY_COUNTER_OFFSET = 88
+KEY_ID_OFFSET = 92
+IMAGE_SHA256_OFFSET = 96
+SIGNATURE_OFFSET = 128
+SIGNATURE_SIZE = 64
+SIGNED_SIZE = 128           # the signature covers bytes 0..127
+EXT_OFFSET = 88             # hwlink.ImageHeader.extension = bytes 88..251
+EXT_SIZE = 164
 IMAGE_TYPE_APPLICATION = 1
 LOAD_ADDRESS = 0x0800C000
 SLOT_SIZE = 0x000F4000      # 976 KB
@@ -61,6 +83,7 @@ META_CONFIRMED_MAGIC = 0x434F4E46
 META_REJECTED_MAGIC = 0x52454A45
 
 IMAGE_HEADER = struct.Struct("<IHHIIIIIII20s32s164sI")
+assert EXT_OFFSET + EXT_SIZE == HEADER_SIZE - 4
 
 HEADER_FIELDS = (
     ("magic", "<I"),
@@ -107,6 +130,124 @@ def commit_text(raw: bytes) -> str:
     return raw.hex()
 
 
+# ------------------------------------------------------------- signing
+
+
+def _crypto():
+    try:
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec, utils
+    except ImportError as error:
+        raise ValueError("signing needs the Python 'cryptography' package "
+                         "(pip install -r tools/requirements.txt)") from error
+    return hashes, serialization, ec, utils
+
+
+def load_key(path: pathlib.Path):
+    """Load a P-256 private or public key from a PEM file."""
+    _hashes, serialization, ec, _utils = _crypto()
+    data = path.read_bytes()
+    try:
+        key = serialization.load_pem_private_key(data, password=None)
+    except (TypeError, ValueError):
+        key = serialization.load_pem_public_key(data)
+    curve = key.curve if hasattr(key, "curve") else None
+    if not isinstance(curve, ec.SECP256R1):
+        raise ValueError(f"{path}: not a P-256 (secp256r1) key")
+    return key
+
+
+def public_point(key) -> bytes:
+    """X || Y, 64 bytes big-endian, as BOOT stores the key."""
+    _hashes, serialization, _ec, _utils = _crypto()
+    public = key.public_key() if hasattr(key, "public_key") else key
+    raw = public.public_bytes(serialization.Encoding.X962,
+                              serialization.PublicFormat.UncompressedPoint)
+    return raw[1:]
+
+
+def key_id(point: bytes) -> int:
+    return int.from_bytes(hashlib.sha256(point).digest()[:4], "little")
+
+
+def sign_header(header: bytes, body: bytes, key,
+                security_counter: int | None = None) -> bytes:
+    """Return a version 2 header for body, signed with a private key."""
+    hashes, _serialization, ec, utils = _crypto()
+    if not hasattr(key, "sign"):
+        raise ValueError("signing needs a private key")
+    out = bytearray(header)
+    if security_counter is None:
+        security_counter, = struct.unpack_from(
+            "<I", header, SECURITY_COUNTER_OFFSET)
+    if not 0 <= security_counter <= 0xFFFFFFFF:
+        raise ValueError("security counter must fit in 32 bits")
+    struct.pack_into("<H", out, 4, HEADER_VERSION)
+    struct.pack_into("<I", out, SECURITY_COUNTER_OFFSET, security_counter)
+    struct.pack_into("<I", out, KEY_ID_OFFSET, key_id(public_point(key)))
+    out[IMAGE_SHA256_OFFSET:IMAGE_SHA256_OFFSET + 32] = \
+        hashlib.sha256(body).digest()
+    out[SIGNATURE_OFFSET + SIGNATURE_SIZE:252] = bytes(252 - SIGNATURE_OFFSET
+                                                      - SIGNATURE_SIZE)
+    der = key.sign(bytes(out[:SIGNED_SIZE]), ec.ECDSA(hashes.SHA256()))
+    r, s = utils.decode_dss_signature(der)
+    out[SIGNATURE_OFFSET:SIGNATURE_OFFSET + SIGNATURE_SIZE] = \
+        r.to_bytes(32, "big") + s.to_bytes(32, "big")
+    struct.pack_into("<I", out, 252, zlib.crc32(out[:252]) & 0xFFFFFFFF)
+    return bytes(out)
+
+
+def signature_valid(header: bytes, key) -> bool:
+    """Check a version 2 header's signature the way BOOT does."""
+    hashes, _serialization, ec, utils = _crypto()
+    from cryptography.exceptions import InvalidSignature
+    public = key.public_key() if hasattr(key, "public_key") else key
+    raw = header[SIGNATURE_OFFSET:SIGNATURE_OFFSET + SIGNATURE_SIZE]
+    der = utils.encode_dss_signature(int.from_bytes(raw[:32], "big"),
+                                     int.from_bytes(raw[32:], "big"))
+    try:
+        public.verify(der, header[:SIGNED_SIZE], ec.ECDSA(hashes.SHA256()))
+    except InvalidSignature:
+        return False
+    return True
+
+
+def generate_key(path: pathlib.Path) -> None:
+    _hashes, serialization, ec, _utils = _crypto()
+    if path.exists():
+        raise ValueError(f"{path} already exists; refusing to overwrite")
+    key = ec.generate_private_key(ec.SECP256R1())
+    pem = key.private_bytes(serialization.Encoding.PEM,
+                            serialization.PrivateFormat.PKCS8,
+                            serialization.NoEncryption())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(pem)
+    path.chmod(0o600)
+
+
+def pubkey_c_source(key, source: str) -> str:
+    """C definition of boot_signing_pubkey / boot_signing_key_id."""
+    point = public_point(key)
+    rows = []
+    for offset in range(0, len(point), 8):
+        rows.append("    " + ", ".join(f"0x{b:02x}"
+                                      for b in point[offset:offset + 8]))
+    return (
+        "/*\n"
+        " * Generated by tools/mkimage.py --export-pubkey; do not edit.\n"
+        f" * Source: {source}\n"
+        " * SRS:    BSAFE-006\n"
+        " */\n\n"
+        "#include <stdint.h>\n"
+        "#include \"signing_key.h\"\n\n"
+        "const uint8_t boot_signing_pubkey[64] = {\n"
+        + ",\n".join(rows) + "\n};\n\n"
+        f"const uint32_t boot_signing_key_id = 0x{key_id(point):08x}UL;\n")
+
+
+# ---------------------------------------------------------------- images
+
+
 def validate_binary(binary: bytes) -> list[str]:
     errors = []
     if len(binary) < 8:
@@ -133,7 +274,7 @@ def build_header(binary: bytes, args) -> bytes:
 
     header = bytearray(HEADER_SIZE)
     struct.pack_into("<I", header, 0, MAGIC)
-    struct.pack_into("<H", header, 4, HEADER_VERSION)
+    struct.pack_into("<H", header, 4, HEADER_VERSION_UNSIGNED)
     struct.pack_into("<H", header, 6, HEADER_SIZE)
     struct.pack_into("<I", header, 8, IMAGE_TYPE_APPLICATION)
     struct.pack_into("<I", header, 12, version)
@@ -145,6 +286,9 @@ def build_header(binary: bytes, args) -> bytes:
     header[36:56] = commit_bytes(args.commit)
     header[56:88] = args.name.encode("ascii", "replace")[:32].ljust(32, b"\0")
     struct.pack_into("<I", header, 252, zlib.crc32(header[:252]) & 0xFFFFFFFF)
+    if getattr(args, "key", None) is not None:
+        return sign_header(bytes(header), binary, load_key(args.key),
+                           args.security_counter)
     return bytes(header)
 
 
@@ -159,7 +303,8 @@ def read_image(path: pathlib.Path) -> tuple[bytes, bytes, int]:
      _reserved, header_crc32) = fields
     if magic != MAGIC:
         raise ValueError(f"{path}: bad image magic")
-    if header_version != HEADER_VERSION or header_size != HEADER_SIZE or \
+    if header_version not in (HEADER_VERSION, HEADER_VERSION_UNSIGNED) or \
+            header_size != HEADER_SIZE or \
             image_type != IMAGE_TYPE_APPLICATION:
         raise ValueError(f"{path}: bad image header version, size or type")
     if load_address != LOAD_ADDRESS:
@@ -173,6 +318,10 @@ def read_image(path: pathlib.Path) -> tuple[bytes, bytes, int]:
         raise ValueError(f"{path}: image_size does not match the body")
     if zlib.crc32(body) & 0xFFFFFFFF != image_crc32:
         raise ValueError(f"{path}: image CRC32 mismatch")
+    if header_version == HEADER_VERSION and \
+            hashlib.sha256(body).digest() != \
+            data[IMAGE_SHA256_OFFSET:IMAGE_SHA256_OFFSET + 32]:
+        raise ValueError(f"{path}: image SHA-256 mismatch")
     return data[:HEADER_SIZE], body, image_crc32
 
 
@@ -297,7 +446,7 @@ def factory_segments(boot: pathlib.Path, image_a: pathlib.Path,
     return segments
 
 
-def inspect(path: pathlib.Path) -> int:
+def inspect(path: pathlib.Path, key_path: pathlib.Path | None = None) -> int:
     data = path.read_bytes()
     if len(data) < HEADER_SIZE:
         print(f"{path}: shorter than a 256-byte header", file=sys.stderr)
@@ -317,7 +466,9 @@ def inspect(path: pathlib.Path) -> int:
     errors = []
     if fields["magic"] != MAGIC:
         errors.append("bad magic")
-    if fields["header_version"] != HEADER_VERSION:
+    signed = fields["header_version"] == HEADER_VERSION
+    if fields["header_version"] not in (HEADER_VERSION,
+                                        HEADER_VERSION_UNSIGNED):
         errors.append("bad header version")
     if fields["header_size"] != HEADER_SIZE:
         errors.append("bad header size")
@@ -334,6 +485,30 @@ def inspect(path: pathlib.Path) -> int:
     if zlib.crc32(body) & 0xFFFFFFFF != fields["image_crc32"]:
         errors.append("image CRC32 mismatch")
     errors.extend(validate_binary(body))
+    security_counter, image_key_id = struct.unpack_from(
+        "<II", header, SECURITY_COUNTER_OFFSET)
+    image_sha = header[IMAGE_SHA256_OFFSET:IMAGE_SHA256_OFFSET + 32]
+    signature = "unsigned (version 1)"
+    if signed:
+        if hashlib.sha256(body).digest() != image_sha:
+            errors.append("image SHA-256 mismatch")
+        signature = "present, not checked (pass --key)"
+        if key_path is not None:
+            try:
+                key = load_key(key_path)
+            except (OSError, ValueError) as error:
+                errors.append(str(error))
+            else:
+                if key_id(public_point(key)) != image_key_id:
+                    signature = "signed with a different key"
+                    errors.append(signature)
+                elif signature_valid(header, key):
+                    signature = "valid"
+                else:
+                    signature = "INVALID"
+                    errors.append("signature is invalid")
+    elif key_path is not None:
+        errors.append("image is not signed")
 
     print(f"file          : {path}")
     print(f"magic         : 0x{fields['magic']:08x}")
@@ -349,6 +524,11 @@ def inspect(path: pathlib.Path) -> int:
     print(f"git commit    : {commit_text(git_commit)}")
     print(f"name          : {name}")
     print(f"header CRC32  : 0x{header_crc:08x}")
+    if signed:
+        print(f"security ctr  : {security_counter}")
+        print(f"key id        : 0x{image_key_id:08x}")
+        print(f"image SHA-256 : {image_sha.hex()}")
+    print(f"signature     : {signature}")
 
     if errors:
         for error in errors:
@@ -366,6 +546,20 @@ def main() -> int:
     parser.add_argument("--commit", default="")
     parser.add_argument("--timestamp", default="0")
     parser.add_argument("--name", default="stm32-application")
+    parser.add_argument("--key", type=pathlib.Path,
+                        help="P-256 PEM key: sign the image (private key), "
+                             "or check --inspect (private or public key)")
+    parser.add_argument("--security-counter", type=lambda v: int(v, 0),
+                        default=None,
+                        help="anti-rollback counter for a signed image "
+                             "(default 0, or kept by --sign)")
+    parser.add_argument("--sign", type=pathlib.Path, metavar="IMG",
+                        help="sign an existing .img with --key into --output")
+    parser.add_argument("--genkey", type=pathlib.Path, metavar="PEM",
+                        help="generate a new P-256 private key")
+    parser.add_argument("--export-pubkey", type=pathlib.Path, metavar="PEM",
+                        help="write the C definition of BOOT's public key "
+                             "for this PEM to --output")
     parser.add_argument("--inspect", type=pathlib.Path,
                         help="print and check an existing image file")
     parser.add_argument("--metadata", choices=("A", "B"),
@@ -392,7 +586,51 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.inspect is not None:
-        return inspect(args.inspect)
+        return inspect(args.inspect, args.key)
+
+    if args.genkey is not None:
+        try:
+            generate_key(args.genkey)
+            point = public_point(load_key(args.genkey))
+        except (OSError, ValueError) as error:
+            print(f"mkimage: {error}", file=sys.stderr)
+            return 1
+        print(f"mkimage: {args.genkey} (P-256 private key, "
+              f"key id 0x{key_id(point):08x})")
+        return 0
+
+    if args.export_pubkey is not None:
+        if args.output is None:
+            parser.error("--export-pubkey needs --output")
+        try:
+            key = load_key(args.export_pubkey)
+            source = pubkey_c_source(key, args.export_pubkey.name)
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(source)
+        except (OSError, ValueError) as error:
+            print(f"mkimage: {error}", file=sys.stderr)
+            return 1
+        print(f"mkimage: {args.output} (key id "
+              f"0x{key_id(public_point(key)):08x})")
+        return 0
+
+    if args.sign is not None:
+        if args.key is None or args.output is None:
+            parser.error("--sign needs --key and --output")
+        try:
+            header, body, _crc = read_image(args.sign)
+            signed = sign_header(header, body, load_key(args.key),
+                                 args.security_counter)
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_bytes(signed + body)
+        except (OSError, ValueError) as error:
+            print(f"mkimage: {error}", file=sys.stderr)
+            return 1
+        counter, ident = struct.unpack_from("<II", signed,
+                                            SECURITY_COUNTER_OFFSET)
+        print(f"mkimage: {args.output} (signed, key id 0x{ident:08x}, "
+              f"security counter {counter})")
+        return 0
 
     if args.factory_hex is not None:
         if not (args.boot and args.slot_a and args.slot_b):
@@ -442,13 +680,18 @@ def main() -> int:
             print(f"mkimage: {error}", file=sys.stderr)
         return 1
 
-    header = build_header(binary, args)
+    try:
+        header = build_header(binary, args)
+    except (OSError, ValueError) as error:
+        print(f"mkimage: {error}", file=sys.stderr)
+        return 1
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(header + binary)
 
     image_crc = zlib.crc32(binary) & 0xFFFFFFFF
+    state = "signed" if args.key is not None else "unsigned"
     print(f"mkimage: {args.output} ({HEADER_SIZE + len(binary)} bytes, "
-          f"version {args.version}, crc 0x{image_crc:08x})")
+          f"version {args.version}, crc 0x{image_crc:08x}, {state})")
     return 0
 
 

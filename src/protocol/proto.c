@@ -25,6 +25,7 @@
 #include "metadata.h"
 #include "proto.h"
 #include "selection.h"
+#include "signing_key.h"
 #include "uart3.h"
 #include "update.h"
 
@@ -257,7 +258,19 @@ static const char *slot_detail(const boot_slot_info_t *info)
         return "no header";
     }
     if (!info->header_valid) {
-        return "bad header";
+        switch (info->header_status) {
+        case BOOT_HEADER_UNSIGNED:
+            return "image is not signed";
+        case BOOT_HEADER_WRONG_KEY:
+            return "signed with a different key";
+        case BOOT_HEADER_BAD_SIGNATURE:
+            return "bad signature";
+        default:
+            return "bad header";
+        }
+    }
+    if (info->below_floor) {
+        return "superseded: security counter below floor";
     }
     if (info->rejected) {
         return info->rejected_reason == BOOT_REJECT_TRIAL_LIMIT
@@ -278,6 +291,9 @@ static const char *slot_detail(const boot_slot_info_t *info)
     }
     if (!info->crc_ok) {
         return "image CRC32 mismatch";
+    }
+    if (!info->digest_ok) {
+        return "image SHA-256 mismatch";
     }
     if (info->confirmed) {
         return "confirmed";
@@ -357,7 +373,8 @@ static bool send_boot_info(uint16_t seq)
             info->header_valid ? info->header.version : 0U,
             info->header_valid ? info->header.build_timestamp : 0U,
             commit_ref, name_ref,
-            info->header_valid ? info->header.image_size : 0U, detail_ref);
+            info->header_valid ? info->header.image_size : 0U, detail_ref,
+            info->header_valid ? info->header.security_counter : 0U);
         if (refs[i] == 0) {
             flatcc_builder_reset(&builder);
             return false;
@@ -423,7 +440,12 @@ static bool send_boot_info(uint16_t seq)
             &builder, g_selection->active_valid ? 1U : 0U) != 0 ||
         hwlink_BootInfo_target_slot_add(&builder, target_slot) != 0 ||
         hwlink_BootInfo_boot_version_add(&builder, boot_version) != 0 ||
-        hwlink_BootInfo_boot_build_add(&builder, boot_build) != 0) {
+        hwlink_BootInfo_boot_build_add(&builder, boot_build) != 0 ||
+        hwlink_BootInfo_signed_images_add(
+            &builder, BOOT_SIGNED_IMAGES ? 1U : 0U) != 0 ||
+        hwlink_BootInfo_key_id_add(&builder, boot_signing_key_id) != 0 ||
+        hwlink_BootInfo_security_floor_add(
+            &builder, boot_selection_security_floor(g_selection)) != 0) {
         flatcc_builder_reset(&builder);
         return false;
     }
@@ -485,6 +507,19 @@ static void handle_update_begin(uint16_t seq,
         desc.git_commit[i] = flatbuffers_uint8_vec_at(commit, i);
     }
     desc.git_commit_len = (uint32_t)commit_len;
+
+    /* Protocol minor 3: header bytes 88..251.  Anything but the exact size
+     * is malformed; an absent field leaves an unsigned version 1 header. */
+    flatbuffers_uint8_vec_t extension = hwlink_ImageHeader_extension(image);
+    if (extension != NULL) {
+        if (flatbuffers_uint8_vec_len(extension) != BOOT_IMAGE_EXT_SIZE) {
+            (void)send_nak(seq, hwlink_Error_MALFORMED,
+                           "extension must be 164 bytes", 0U);
+            return;
+        }
+        memcpy(desc.extension, extension, BOOT_IMAGE_EXT_SIZE);
+        desc.extension_present = true;
+    }
 
     bool force = hwlink_UpdateBegin_force(begin) != 0;
     char detail[64];

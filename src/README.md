@@ -23,8 +23,10 @@ src/
 ├── common/                  Hardware-independent helpers
 │   ├── boot_layout.h        Flash map constants (normative, see Jenkinsfile)
 │   ├── crc32.c/.h           CRC32 of image and metadata records
-│   ├── image.c/.h           Image header parse/validate
-│   └── metadata.c/.h        Append-only metadata record log
+│   ├── image.c/.h           Image header parse/validate, signature check
+│   ├── metadata.c/.h        Append-only metadata record log
+│   ├── sha256.c/.h          SHA-256 for image authentication (BSAFE-006)
+│   └── signing_key.h        Built-in public key (defined in keys/*.c)
 │
 └── protocol/                HWLINK wire protocol
     ├── hwlink.c/.h          Frame codec (COBS + CRC32)
