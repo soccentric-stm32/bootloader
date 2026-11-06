@@ -1,15 +1,20 @@
-/*
- * update.c - image update state machine (section 9)
+/**
+ * @file    update.c
+ * @brief   Image update state machine implementation (SRS section 9).
  *
- * Author:  Sandesh Ghimire <sandesh@soccentric.com>
- * Date:    2026-11-03
- * Target:  STM32F767ZIT6
- * SRS:     UPD-001..UPD-010, IMG-001..IMG-006, BSAFE-006
- *
- * Only the inactive slot is written (UPD-001).  Slot sectors are erased when
- * the first chunk that falls into them arrives (UPD-003).  Chunks may have
- * any length from 1 to 1024 bytes; a small staging buffer keeps flash
- * programming word-aligned.
+ * @details
+ * - Only the /inactive/ slot is written (UPD-001): the slot is chosen
+ *   via `boot_flash_target_slot()` at `begin` time, so the active
+ *   image is never touched during a transfer.
+ * - Slot sectors are erased when the first chunk that falls into them
+ *   arrives (UPD-003, `erased_mask`-tracked).
+ * - Chunks may be any length from 1 to 1024 bytes; the
+ *   `word_stage`[4] staging buffer keeps flash programming word-aligned
+ *   (32 bits).
+ * @author  Sandesh Ghimire <sandesh@soccentric.com>
+ * @date    2026-11-03
+ * @target  STM32F767ZIT6
+ * @srs     UPD-001..UPD-010, IMG-001..IMG-006, BSAFE-006
  */
 
 #include <string.h>
@@ -21,8 +26,20 @@
 #include "selection.h"
 #include "update.h"
 
+/** @brief Module-private progress callback (see @ref boot_progress_fn). */
 static boot_progress_fn progress_cb;
 
+/**
+ * @brief   Safe copy of a NUL-terminated C string into a detail buffer.
+ *
+ * @details Never overflows @ref cap (which may be 0 or @ref detail may be
+ *          NULL - both are treated as "no buffer"); always NUL-terminates
+ *          when there is room.
+ *
+ * @param[out] detail  Destination buffer.
+ * @param[in]   cap     Capacity in bytes.
+ * @param[in]   text    Source string.
+ */
 static void detail_set(char *detail, size_t cap, const char *text)
 {
     if (detail == NULL || cap == 0U) {
@@ -36,6 +53,15 @@ static void detail_set(char *detail, size_t cap, const char *text)
     detail[i] = '\0';
 }
 
+/**
+ * @brief   Build the standard flash-error detail string
+ *          ("flash error at 0xXXXXXXXX").
+ *
+ * @param[out] detail  Destination buffer.
+ * @param[in]   cap     Capacity in bytes.
+ * @param[in]   address Word address that failed, rendered as an 8-hex
+ *                      nibble value.
+ */
 static void detail_flash_error(char *detail, size_t cap, uint32_t address)
 {
     static const char hex[] = "0123456789ABCDEF";
@@ -66,6 +92,13 @@ void boot_update_set_progress_cb(boot_progress_fn callback)
     progress_cb = callback;
 }
 
+/**
+ * @brief   Invoke the module progress callback if one is installed.
+ *
+ * @param[in] operation  Operation name (for logs/UI).
+ * @param[in] done       Completed units.
+ * @param[in] total      Total units.
+ */
 static void progress(const char *operation, uint32_t done, uint32_t total)
 {
     if (progress_cb != NULL) {
@@ -73,6 +106,21 @@ static void progress(const char *operation, uint32_t done, uint32_t total)
     }
 }
 
+/**
+ * @brief   Phase-1 descriptor gate (UPD-002 argument checks).
+ *
+ * @details Cheap, read-only checks against the host-provided
+ *          `boot_image_desc_t`: magic, header version (1 or 2), header
+ *          size, image type, load address, and image size range
+ *          (8..BOOT_SLOT_SIZE).
+ *
+ * @param[in]  desc   Descriptor to validate.
+ * @param[out] error  On failure, the `boot_error_t` code to return to
+ *          the caller.
+ * @param[out] detail Diagnostics buffer (optional).
+ * @param[in]  cap    `detail` capacity.
+ * @return  `true` if the descriptor passed the gate.
+ */
 static bool validate_desc(const boot_image_desc_t *desc, boot_error_t *error,
                           char *detail, size_t cap)
 {
@@ -94,6 +142,21 @@ static bool validate_desc(const boot_image_desc_t *desc, boot_error_t *error,
     return true;
 }
 
+/**
+ * @brief   Run the BSAFE-006 / image-header validity checks and map the
+ *          result to a `boot_error_t`.
+ *
+ * @details Wraps `boot_image_header_check` so each
+ *          `boot_header_status_t` maps to the corresponding wire-level
+ *          error code and detail text; the `header_status` diagnostic
+ *          field is preserved on the descriptor for the host.
+ *
+ * @param[in]  header Reconstructed/observed header.
+ * @param[out] detail Diagnostics.
+ * @param[in]  cap    Detail capacity.
+ * @return  `BOOT_ERR_NONE` if the header is valid; otherwise the
+ *          matching `BOOT_ERR_BAD_*` / `BOOT_ERR_AUTH_FAILED` code.
+ */
 static boot_error_t check_header(const boot_image_header_t *header,
                                  char *detail, size_t cap)
 {
@@ -119,6 +182,12 @@ static boot_error_t check_header(const boot_image_header_t *header,
     }
 }
 
+/**
+ * @brief   See @ref boot_update_begin in update.h for the full contract.
+ *
+ * @details Called from the protocol layer when a valid `UpdateBegin`
+ *          request is decoded.
+ */
 boot_error_t boot_update_begin(boot_update_t *update,
                                const boot_selection_t *selection,
                                const boot_image_desc_t *desc, bool force,
@@ -127,18 +196,19 @@ boot_error_t boot_update_begin(boot_update_t *update,
     if (update == NULL || desc == NULL) {
         return BOOT_ERR_MALFORMED;
     }
-    /* P0-1: the active slot is on trial, so the other slot is the only
-     * known-good rollback image.  Do not erase its metadata. */
+
+    /* P0-1 trial guard: refuse while the active slot is still in its
+     * trial window, unless the caller explicitly forced it. */
     if (!force && selection != NULL && selection->active_valid &&
         selection->active_pending) {
         detail_set(detail, detail_cap,
                    "active slot is on trial (confirm or roll back first)");
         return BOOT_ERR_BAD_STATE;
     }
+
+    /* BNFR-003: if a prior session was left active (e.g. host dropped
+     * mid-transfer), reset it so we can start clean. */
     if (update->active) {
-        /* BNFR-003: a lost link must not wedge the update path.  Restart
-         * the session; this call re-erases the metadata sector, and the
-         * slot sectors are erased lazily on the first write. */
         boot_update_reset(update);
     }
 
@@ -212,6 +282,24 @@ boot_error_t boot_update_begin(boot_update_t *update,
     return BOOT_ERR_NONE;
 }
 
+/**
+ * @brief   Ensure every slot-sector overlapped by [offset, offset+len) has
+ *          been erased before we program it.
+ *
+ * @details Walks the slot's physical sector map; for each sector that
+ *          overlaps the chunk and is not yet in `erased_mask`, calls the
+ *          flash driver's sector-erase.  Reports progress via the
+ *          installed callback.
+ *
+ * @param[in,out] update   Session; `erased_mask` is updated on success.
+ * @param[in]     offset   Chunk start (slot-relative).
+ * @param[in]     len      Chunk length.
+ * @param[out]    detail   Diagnostics on failure.
+ * @param[in]     cap      Detail capacity.
+ * @return  `true` on success (no erase needed, or all erases succeeded);
+ *          `false` on any flash failure.
+ * @srs     UPD-003
+ */
 static bool ensure_sectors_erased(boot_update_t *update, uint32_t offset,
                                   uint32_t len, char *detail,
                                   size_t detail_cap)
@@ -245,6 +333,18 @@ static bool ensure_sectors_erased(boot_update_t *update, uint32_t offset,
     return true;
 }
 
+/**
+ * @brief   Program a single 32-bit word to flash via the slot sector
+ *          driver.
+ *
+ * @param[in,out] update      Session (for the target slot).
+ * @param[in]     offset      Word offset (slot-relative, 4-byte aligned).
+ * @param[in]     bytes       4 bytes to write (little-endian order on the
+ *          wire; the driver does the byte-ordering internally).
+ * @param[out]    detail      Diagnostics on failure.
+ * @param[in]     cap         Detail capacity.
+ * @return  `true` on success.
+ */
 static bool program_word(boot_update_t *update, uint32_t offset,
                          const uint8_t bytes[4], char *detail,
                          size_t detail_cap)
@@ -263,6 +363,10 @@ static bool program_word(boot_update_t *update, uint32_t offset,
     return true;
 }
 
+/**
+ * @brief   See @ref boot_update_data in update.h for the full contract.
+ *          Called once per accepted chunk from the protocol layer.
+ */
 boot_error_t boot_update_data(boot_update_t *update, uint32_t offset,
                               const uint8_t *data, uint32_t len,
                               uint32_t *next_offset,
@@ -345,6 +449,10 @@ boot_error_t boot_update_data(boot_update_t *update, uint32_t offset,
     return BOOT_ERR_NONE;
 }
 
+/**
+ * @brief   See @ref boot_update_end in update.h for the full contract.
+ *          Called from the protocol layer after the last chunk.
+ */
 boot_error_t boot_update_end(boot_update_t *update, uint32_t *image_crc,
                              char *detail, size_t detail_cap)
 {
@@ -421,6 +529,10 @@ boot_error_t boot_update_end(boot_update_t *update, uint32_t *image_crc,
     return BOOT_ERR_NONE;
 }
 
+/**
+ * @brief   See @ref boot_update_activate in update.h for the full
+ *          contract.  Called after a successful `UpdateEnd`.
+ */
 boot_error_t boot_update_activate(boot_update_t *update,
                                   const boot_selection_t *selection,
                                   char *detail, size_t detail_cap)
@@ -515,6 +627,10 @@ boot_error_t boot_update_activate(boot_update_t *update,
     return BOOT_ERR_NONE;
 }
 
+/**
+ * @brief   See @ref boot_update_abort in update.h for the full
+ *          contract.
+ */
 void boot_update_abort(boot_update_t *update)
 {
     if (update == NULL) {
