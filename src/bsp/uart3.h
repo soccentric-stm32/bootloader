@@ -60,8 +60,6 @@
  *          the update flow does).  The ring lives in the `.dma_buffer`
  *          linker section (32-byte aligned) - it is /not/ in flash -
  *          so the DMA can own it while the CPU is busy elsewhere.
- * @{
- */
  */
 
 /** @brief Total bytes in the receive ring (4096). */

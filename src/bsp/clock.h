@@ -43,16 +43,20 @@
  *
  * @details Order of operations inside the driver:
  *
- * 1. Enable PWR clock, request voltage scale 1 (3.3 V board), poll
- *    readiness.
- * 2. Switch the core to HSI so the PLL can be configured safely.
- * 3. Enable HSE (bypass), poll ready with a bounded timeout (100 ms);
- *    on timeout the function returns `false`.
- * 4. Configure the PLL M / N / P / Q / R dividers for 216 MHz, and the
- *    AHB / APB1 / APB2 prescalers (1 / 4 / 2).
- * 5. Set flash latency (7 wait states) and enable over-drive.
- * 6. Switch the SYSCLK to the PLL, verify the switch actually
- *    happened (clock-source readback), return.
+ * 1. Enable the PWR clock and request voltage scale 1 (3.3 V board).
+ * 2. Start the HSE in *bypass* mode (the ST-LINK MCO already drives
+ *    PH0; no internal oscillator startup needed), and configure the
+ *    PLL (M=8, N=432, P=/2, Q=9).
+ * 3. Enable the over-drive mode required for the 216 MHz core.
+ * 4. Switch SYSCLK to the PLL and set the AHB / APB1 / APB2 prescalers
+ *    (1 / 4 / 2) with 7 flash wait states; the HAL updates the
+ *    latency before the switch (latency-then-frequency order).
+ * 5. Enable the flash prefetch buffer and the ART accelerator for the
+ *    216 MHz core.
+ *
+ * Any failed HAL call returns `false`.  (The SysTick handler that
+ * `HAL_RCC_ClockConfig` starts is provided in this file - see the
+ * note on `SysTick_Handler` at the bottom of clock.c.)
  *
  * @return  `true`  when the clock tree is set up and stable; `false`
  *          on any step that could not complete (HSE timeout, PLL did

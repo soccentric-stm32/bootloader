@@ -118,7 +118,7 @@
  * | bits      | field             | notes                                |
  * |-----------|-------------------|--------------------------------------|
  * | 0..23     | magic             | @ref BOOT_HANDOVER_MAGIC ("HND")     |
- * | 24..25    | slot              | 0 = A, 1 = B                         |
+ * | 24..25    | slot              | 1 = A, 2 = B (per boot_contract.h)   |
  * | 26        | pending flag      | 1 = slot still in trial window       |
  * | 27..28    | trial count       | 0..3 (saturated by the limiter)      |
  * | 29..31    | reserved / 0      | must be written as zero              |
