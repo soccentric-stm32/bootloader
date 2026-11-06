@@ -69,6 +69,7 @@ class FakeBoot(threading.Thread):
         self.begin_header: bytes | None = None
         self.active_pending = False   # report the active slot on trial
         self.resets = 0
+        self.outcome = 1              # BootOutcome: 1 BOOTED, 2 ROLLED_BACK
 
     def run(self) -> None:
         while not self.stop.is_set():
@@ -159,7 +160,7 @@ class FakeBoot(threading.Thread):
             BootInfo.BootInfoAddSlots(b, slots)
         BootInfo.BootInfoAddActiveSlot(
             b, Slot.A if self.active == "A" else Slot.B)
-        BootInfo.BootInfoAddLastOutcome(b, 1)
+        BootInfo.BootInfoAddLastOutcome(b, self.outcome)
         BootInfo.BootInfoAddRejectedSlot(b, 0)
         BootInfo.BootInfoAddFlashMode(b, 2)
         BootInfo.BootInfoAddActiveValid(b, True)
@@ -278,7 +279,7 @@ class FakeBoot(threading.Thread):
             return self._status(seq)
         if body_type == 10:     # Reset: BOOT boots the active slot
             self.resets += 1
-            if self.role == Role.BOOTLOADER and self.active_pending:
+            if self.role == Role.BOOTLOADER:
                 self.role = 3
                 self.active_pending = False
             return self._ack(seq)
@@ -434,6 +435,40 @@ def test_wait_releases_boot_caught_in_listen_window(monkeypatch):
                                                10.0)
         assert result["state"] == "confirmed"
         assert device.resets == 1
+    finally:
+        device.stop.set()
+        device.join(timeout=2)
+
+
+def test_wait_ignores_stale_rollback_outcome(monkeypatch):
+    """TRY-008 keeps last_outcome ROLLED_BACK until the next update.  A wait
+    that catches BOOT afterwards must release it and report the running,
+    confirmed application, not an old rollback."""
+    monkeypatch.setattr(bootctl, "BOOT_SETTLE_S", 0.1, raising=False)
+    device = FakeBoot()
+    device.outcome = 2       # ROLLED_BACK from an earlier image
+    device.start()
+    try:
+        result = bootctl.wait_for_confirmation(device.slave_name, 115200,
+                                               10.0, expected_slot="A")
+        assert result["state"] == "confirmed"
+        assert result["slot"] == "A"
+        assert device.resets == 1
+    finally:
+        device.stop.set()
+        device.join(timeout=2)
+
+
+def test_wait_reports_rollback_to_the_other_slot():
+    device = FakeBoot()
+    device.outcome = 2       # ROLLED_BACK, and BOOT now runs slot B
+    device.active = "B"
+    device.start()
+    try:
+        result = bootctl.wait_for_confirmation(device.slave_name, 115200,
+                                               5.0, expected_slot="A")
+        assert result["state"] == "rolled_back"
+        assert device.resets == 0
     finally:
         device.stop.set()
         device.join(timeout=2)

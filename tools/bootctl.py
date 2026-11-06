@@ -552,6 +552,8 @@ def open_boot_link(port: str, baud: int, timeout: float) -> Link:
 # After a Reset, stay off the port until BOOT's 500 ms listen window and its
 # image checks (about 1.2 s for a full slot) are over.
 BOOT_SETTLE_S = 2.0
+# How often wait may release BOOT from its listen window before giving up.
+MAX_BOOT_RELEASES = 3
 
 
 def wait_for_confirmation(port: str, baud: int, timeout: float,
@@ -564,6 +566,7 @@ def wait_for_confirmation(port: str, baud: int, timeout: float,
     already defines it)."""
     deadline = time.monotonic() + timeout
     last = "no reply"
+    releases = 0
     while time.monotonic() < deadline:
         link = None
         try:
@@ -574,18 +577,26 @@ def wait_for_confirmation(port: str, baud: int, timeout: float,
                 # failed image.  Read the boot info to report it.
                 info = read_boot_info(link)
                 data = boot_info_dict(reply, info)
-                if data["last_outcome"] == "ROLLED_BACK":
-                    return {"state": "rolled_back", **data}
+                rolled = data["last_outcome"] == "ROLLED_BACK"
                 last = f"still in BOOT ({data['last_outcome']})"
-                active = next((s for s in data["slots"]
-                               if s["slot"] == data["active_slot"]), None)
-                if data["active_valid"] and active and active["pending"]:
-                    # ENT-001: this Hello reached BOOT inside its 500 ms
-                    # listen window after the reset, which keeps BOOT in
-                    # update mode before the trial starts.  Let it boot
-                    # the pending slot; no trial attempt was used.
+                # last_outcome stays ROLLED_BACK until the next successful
+                # update (TRY-008), so it proves a rollback only together
+                # with a different active slot, or with nothing bootable.
+                if rolled and expected_slot in ("A", "B") and \
+                        data["active_slot"] != expected_slot:
+                    return {"state": "rolled_back", **data}
+                if not data["active_valid"]:
+                    if rolled:
+                        return {"state": "rolled_back", **data}
+                elif releases < MAX_BOOT_RELEASES:
+                    # A bootable slot and BOOT answers anyway: this Hello
+                    # reached BOOT inside its 500 ms listen window after
+                    # the reset (ENT-001), which keeps BOOT in update mode
+                    # before the trial starts.  Let it boot; no trial
+                    # attempt was used.
+                    releases += 1
                     vprint("wait: caught BOOT's listen window; resetting "
-                           "so the pending slot boots")
+                           "so the application boots")
                     send_reset(link)
                     link.close()
                     link = None
