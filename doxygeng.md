@@ -33,7 +33,7 @@ project-owned `.c` / `.h` file. One file per commit, each commit pushed.
 - [x] `src/bsp/fault.c`
 - [ ] `src/bsp/flash.c`
 - [ ] `src/bsp/flash.h`
-- [ ] `src/bsp/iwdg.c`
+- [x] `src/bsp/iwdg.c`
 - [x] `src/bsp/iwdg.h`
 - [ ] `src/bsp/uart3.c`
 - [ ] `src/bsp/uart3.h`
