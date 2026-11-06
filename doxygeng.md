@@ -22,7 +22,7 @@ project-owned `.c` / `.h` file. One file per commit, each commit pushed.
 - [x] `src/app/handover.c`
 - [x] `src/app/handover.h`
 - [x] `src/app/main.c`
-- [ ] `src/app/selection.c`
+- [x] `src/app/selection.c`
 - [x] `src/app/selection.h`
 - [ ] `src/app/update.c`
 - [ ] `src/app/update.h`

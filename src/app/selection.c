@@ -1,14 +1,32 @@
-/*
- * selection.c - metadata scan, A/B selection and trial state (sections 6, 7)
+/**
+ * @file    selection.c
+ * @brief   Metadata scan, A/B selection and trial state (SRS sections 6, 7).
  *
- * Author:  Sandesh Ghimire <sandesh@soccentric.com>
- * Date:    2026-11-03
- * Target:  STM32F767ZIT6
- * SRS:     SEL-001..SEL-005, TRY-002/003/005/006/008, HND-003, BSAFE-006
+ * @details
+ * Implementation notes that apply to the whole file:
  *
- * Trial state, the stay request, the hand-over record and the last outcome
- * live in RTC backup registers 0-3.  VBAT is tied to VDD, so they survive a
- * system reset but not a power loss (TRY-005, OPEN-B03).
+ * - **Persistence layout.** Trial state, the stay-request, the hand-over
+ *   record and the last outcome all live in @e RTC backup registers 0-3
+ *   (see the layout tables in selection.h).  VBAT is tied to VDD on this
+ *   board, so the registers survive a system reset but /do not/ a power
+ *   loss (TRY-005, OPEN-B03) - the persistent source of truth for the
+ *   trial count and the reject state is therefore the append-only
+ *   metadata record in flash; the RTC copy is a fast mirror plus the
+ *   RAM fallback used when the flash write fails.
+ *
+ * - **Scan pipeline.** Each scan runs the same five stages in the same
+ *   order: metadata read -> RAM rejections -> security floor -> vector
+ *   check -> (expensive) CRC/SHA check.  Only the last stage differs
+ *   between the fast (boot path) and full (diagnostic) variants.
+ *
+ * - **Cost model (P2-7).** The hardware CRC and the SHA-256 are
+ *   deliberately ordered cheap-first: the CRC is always computed, the
+ *   SHA-256 only for an image whose CRC already matches.
+ *
+ * @author  Sandesh Ghimire <sandesh@soccentric.com>
+ * @date    2026-11-03
+ * @target  STM32F767ZIT6
+ * @srs     SEL-001..SEL-005, TRY-002/003/005/006/008, HND-003, BSAFE-006
  */
 
 #include <string.h>
@@ -19,9 +37,23 @@
 #include "metadata.h"
 #include "selection.h"
 
+/**
+ * @brief   Compile-time guard: the per-slot flash trial-record area is
+ *          large enough to hold the trial limit.
+ */
 _Static_assert(BOOT_TRIAL_LIMIT <= BOOT_META_TRIAL_RECORDS,
                "trial limit exceeds the TRIAL record area");
 
+/**
+ * @brief   Indexed accessor for the RTC backup registers BKP0R .. BKP9R.
+ *
+ * @param[in] index  0-based index from BKP0R (e.g. @c 0 -> BKP0R, @c 3 -> BKP3R).
+ * @return  Pointer to the 32-bit backup register at the given index.
+ *
+ * @note    Declared `volatile`: the register set is accessed by the
+ *          whole module and must not be reordered or dropped by the
+ *          compiler.
+ */
 static volatile uint32_t *bkp(uint32_t index)
 {
     return &((volatile uint32_t *)&RTC->BKP0R)[index];
@@ -34,6 +66,19 @@ void boot_selection_init(void)
     __HAL_RCC_RTC_CLK_ENABLE();
 }
 
+/**
+ * @brief   Metadata-level gate: can this slot even be considered?
+ *
+ * @details Cheap (register-only) pre-filter used before the vector and
+ *          CRC checks.  A slot passes when its header is valid, it is
+ *          armed by a successful `Activate`, its sequence is coherent
+ *          (non-erased), it is not rejected, and it is not below the
+ *          anti-rollback floor.
+ *
+ * @param[in] info  Slot information to test.
+ * @return  `true`  when the slot passes the metadata gate.
+ * @return  `false` when any of the five conditions fails.
+ */
 static bool metadata_ok(const boot_slot_info_t *info)
 {
     return info->header_valid && info->activated && info->sequence_valid &&
@@ -54,6 +99,17 @@ uint32_t boot_selection_security_floor(const boot_selection_t *selection)
     return floor;
 }
 
+/**
+ * @brief   Apply the anti-rollback floor from an already-computed value.
+ *
+ * @details Helper used by the scan pipeline: walks the two slot
+ *          entries and sets `below_floor` where the security counter is
+ *          strictly below @ref boot_selection_security_floor.
+ *
+ * @param[in,out] selection  Selection context to annotate.
+ *
+ * @srs     BSAFE-006
+ */
 static void apply_security_floor(boot_selection_t *selection)
 {
     uint32_t floor = boot_selection_security_floor(selection);
@@ -65,6 +121,19 @@ static void apply_security_floor(boot_selection_t *selection)
     }
 }
 
+/**
+ * @brief   Re-apply the per-boot RAM rejection mask (P0-2).
+ *
+ * @details Invoked from every scan so that a slot rejected in RAM (because
+ *          the persistent record could not be programmed) cannot become
+ *          bootable or updatable again in the same boot sequence.
+ *
+ * @param[in,out] selection  Selection context; bits in
+ *                           `ram_rejected_mask` force the corresponding
+ *                           slot's `rejected`/`valid` flags.
+ *
+ * @srs     P0-2, TRY-003 (fallback path)
+ */
 static void apply_ram_rejections(boot_selection_t *selection)
 {
     for (uint32_t i = 0U; i < 2U; i++) {
@@ -79,6 +148,23 @@ static void apply_ram_rejections(boot_selection_t *selection)
     }
 }
 
+/**
+ * @brief   Stage 1 of the scan: read header + lifecycle records for both
+ *          slots.
+ *
+ * @details Reads, per slot: the image header, the VERIFIED, ACTIVATED,
+ *          CONFIRMED and REJECTED metadata records, and the per-slot
+ *          trial count.  A special defensive rule: a /torn/ REJECTED
+ *          record (the flash range is non-erased but the record itself
+ *          is not a clean write) is treated as a rejection, because the
+ *          record is append-only and cannot be re-programmed - a
+ *          conservative rejection is preferred over booting a damaged
+ *          image forever.
+ *
+ * @param[in,out] selection  Selection context; the `header_*` and
+ *                           lifecycle fields of both slots are filled.
+ *                           `ram_rejected_mask` is /not/ touched.
+ */
 static void scan_metadata(boot_selection_t *selection)
 {
     for (uint32_t i = 0U; i < 2U; i++) {
@@ -127,6 +213,17 @@ static void scan_metadata(boot_selection_t *selection)
     }
 }
 
+/**
+ * @brief   Stage 4 of the scan: validate the vector tables of every
+ *          slot that already passed the metadata gate.
+ *
+ * @details Cheap (few words of flash).  A slot that fails the metadata
+ *          gate is skipped - no point checking the vectors of an image
+ *          we would reject anyway.
+ *
+ * @param[in,out] selection  Selection context; `vectors_ok` set for
+ *                           metadata-good slots.
+ */
 static void check_vectors(boot_selection_t *selection)
 {
     for (uint32_t i = 0U; i < 2U; i++) {
@@ -137,6 +234,21 @@ static void check_vectors(boot_selection_t *selection)
     }
 }
 
+/**
+ * @brief   Stage 5 (expensive) of the scan: CRC + SHA-256 of one slot.
+ *
+ * @details Order is deliberately cheap-first: the hardware CRC is
+ *          computed for every candidate; the SHA-256 (and hence the
+ *          ECDSA verification it feeds into) is only computed for an
+ *          image whose CRC already matches, so a single CRC failure
+ *          saves a full digest over the slot bytes.
+ *
+ * Sets the composite `valid` gate for the slot on exit.
+ *
+ * @param[in,out] selection  Selection context; `crc_checked`, `crc_ok`,
+ *                           `digest_ok` and `valid` set for the slot.
+ * @param[in]     slot       Slot to verify (A or B).
+ */
 static void check_crc(boot_selection_t *selection, boot_slot_t slot)
 {
     boot_slot_info_t *info = &selection->slot[slot];
@@ -149,6 +261,32 @@ static void check_crc(boot_selection_t *selection, boot_slot_t slot)
     info->valid = info->vectors_ok && info->crc_ok && info->digest_ok;
 }
 
+/**
+ * @brief   Scan both slots and fill @ref boot_slot_info_t entries.
+ *
+ * @details Common pipeline for both the boot-path and the diagnostic
+ *          scan: metadata -> RAM rejections -> security floor -> vector
+ *          check -> (expensive) verify pass.  The only difference is
+ *          the verify pass:
+ *
+ * - **`verify_all == true`** (diagnostic path, @ref boot_selection_scan_full):
+ *   every slot that passed the cheap checks is verified, so the host
+ *   gets the full picture.
+ * - **`verify_all == false`** (boot path, @ref boot_selection_scan):
+ *   verify the best candidate first, then the next-best only when the
+ *   first fails.  This is the P2-7 optimisation: a passing lower-
+ *   sequence slot is never checked while the higher-sequence
+ *   candidate passes, which halves the CRC work in the common
+ *   case (exactly one good image present).
+ *
+ * The per-boot RAM rejection mask is preserved across the scan (it is
+ * the only field that /survives/ the `memset` and is re-established
+ * on the fresh structure).
+ *
+ * @param[in,out] selection  Selection context; fully overwritten except
+ *                           for `ram_rejected_mask`.
+ * @param[in]     verify_all See above.
+ */
 static void scan_slots(boot_selection_t *selection, bool verify_all)
 {
     uint8_t ram_mask = selection->ram_rejected_mask;
@@ -199,16 +337,38 @@ static void scan_slots(boot_selection_t *selection, bool verify_all)
     }
 }
 
+/**
+ * @brief   Fast scan (boot path) - see @ref scan_slots for the pipeline.
+ *
+ * @param[in,out] selection  Selection context.
+ */
 void boot_selection_scan(boot_selection_t *selection)
 {
     scan_slots(selection, false);
 }
 
+/**
+ * @brief   Full scan (diagnostic path) - see @ref scan_slots for the pipeline.
+ *
+ * @param[in,out] selection  Selection context.
+ */
 void boot_selection_scan_full(boot_selection_t *selection)
 {
     scan_slots(selection, true);
 }
 
+/**
+ * @brief   Refresh slot-level info without changing the active/target
+ *          decision (used by GetBootInfo).
+ *
+ * @details Runs a full scan into a scratch copy of the caller's context
+ *          (preserving any in-flight update target) and then replaces
+ *          only the two @ref boot_slot_info_t entries.  The
+ *          `active*` fields and `ram_rejected_mask` are untouched.
+ *
+ * @param[in,out] selection  Selection context whose slot views are
+ *                           refreshed.
+ */
 void boot_selection_refresh_slots(boot_selection_t *selection)
 {
     boot_selection_t refreshed = *selection;
@@ -219,6 +379,16 @@ void boot_selection_refresh_slots(boot_selection_t *selection)
     }
 }
 
+/**
+ * @brief   Reject a slot in RAM for this boot (P0-2) - see selection.h.
+ *
+ * @param[in,out] selection  Context to update; no-op on NULL or invalid
+ *                           slot index.
+ * @param[in]     slot       Slot to reject.
+ * @param[in]     reason     Reason code for diagnostics.
+ *
+ * @srs     P0-2
+ */
 void boot_selection_mark_rejected(boot_selection_t *selection,
                                   boot_slot_t slot, uint32_t reason)
 {
@@ -231,6 +401,22 @@ void boot_selection_mark_rejected(boot_selection_t *selection,
     selection->slot[slot].valid = false;
 }
 
+/**
+ * @brief   Choose the active slot from an already-scanned selection.
+ *
+ * @details Ranking rule (SEL-002): highest activation sequence wins;
+ *          a tie keeps the lower slot (slot A preferred over B on a
+ *          tie).  When the selected slot is pending (activated but not
+ *          confirmed), `trial_count` is reconciled with the RTC mirror:
+ *          the RTC value is used when it is higher than the flash-derived
+ *          count (power-cycle resilience).
+ *
+ * @param[in,out] selection  Context; `active`, `active_valid`,
+ *                           `active_pending`, `trial_count` are set on
+ *                           exit.
+ *
+ * @srs     SEL-002
+ */
 void boot_selection_choose(boot_selection_t *selection)
 {
     selection->active_valid   = false;
@@ -280,6 +466,32 @@ void boot_selection_choose(boot_selection_t *selection)
     selection->trial_count = count;
 }
 
+/**
+ * @brief   Apply the per-boot trial limit (TRY-003).
+ *
+ * @details Called by @ref main after the first choose.  When the
+ *          selected slot is pending and `trial_count` has reached
+ *          `BOOT_TRIAL_LIMIT`:
+ *
+ * 1. Program a REJECTED record into the slot's metadata (persistent;
+ *    the flash-write lock must allow it - which the caller knows, in
+ *    the normal order of operations, it does).
+ * 2. Record the rollback outcome (for the host) and clear the trial
+ *          mirror.
+ * 3. Return `true` so the caller re-scans and re-choose.
+ *
+ * If the REJECTED record /could not/ be programmed, the function
+ * returns `false` - the caller then falls back to @ref
+ * boot_selection_mark_rejected (RAM-only, P0-2) and re-scans.
+ *
+ * @param[in,out] selection  Context to update.
+ * @return  `true`  when the caller must re-scan and re-choose.
+ * @return  `false` when no rejection was applied (either the limit was
+ *          not reached, or the persistent write failed and the caller
+ *          must use the RAM fallback).
+ *
+ * @srs     TRY-003
+ */
 bool boot_selection_apply_trial_limit(boot_selection_t *selection)
 {
     if (!selection->active_valid || !selection->active_pending ||
@@ -299,6 +511,24 @@ bool boot_selection_apply_trial_limit(boot_selection_t *selection)
     return true;
 }
 
+/**
+ * @brief   Increment the trial counter for the slot about to be launched
+ *          (TRY-002).
+ *
+ * @details Appends a TRIAL record to the active slot's metadata sector
+ *          (P2-6: persistent, power-cycle-resilient) and updates the
+ *          RTC mirror so the count is readable between power cycles
+ *          even if the flash write failed.  When the flash write
+ *          failed but the RAM/RTC mirror was updated, the next boot
+ *          will not be able to re-program the (now-erased?) record -
+ *          the RAM fallback in @ref boot_selection_mark_rejected covers
+ *          that case.
+ *
+ * @param[in,out] selection  Context; slot trial count advanced as
+ *                           applicable.
+ *
+ * @srs     TRY-002, P2-6
+ */
 void boot_selection_start_trial(boot_selection_t *selection)
 {
     if (!selection->active_valid || !selection->active_pending) {
@@ -331,12 +561,36 @@ void boot_selection_start_trial(boot_selection_t *selection)
     selection->trial_count = (uint8_t)count;
 }
 
+/**
+ * @brief   Clear the trial mirror (TRY-006).
+ *
+ * @details Called when the slot being launched has just been confirmed
+ *          (exit-trial handshake from the application) - the trial
+ *          window is over and the RTC mirror is zeroed so the next
+ *          pending slot starts from a clean count.
+ *
+ * @srs     TRY-006
+ */
 void boot_selection_clear_trial(void)
 {
     *bkp(0) = 0U;
     __DSB();
 }
 
+/**
+ * @brief   Read and clear the application's stay-in-BOOT request
+ *          (ENT-002).
+ *
+ * @details Atomic read-and-clear of RTC_BKP1R: the magic is consumed
+ *          on read so the intent does not survive into the next, unrelated
+ *          boot (e.g. after `Activate` resets the board, an old request
+ *          must not re-enter update mode).
+ *
+ * @return  `true` if a valid request was present (and has now been
+ *          cleared), `false` otherwise.
+ *
+ * @srs     ENT-002
+ */
 bool boot_selection_take_stay_request(void)
 {
     uint32_t raw = *bkp(1);
@@ -348,6 +602,19 @@ bool boot_selection_take_stay_request(void)
     return true;
 }
 
+/**
+ * @brief   Write the hand-over record to RTC_BKP2R (HND-003).
+ *
+ * @details Called just before @ref boot_handover.  The record carries
+ *          the slot index (1 = A, 2 = B per boot_contract.h), the
+ *          pending flag, and the saturated trial count - everything the
+ *          application and the host need to know about the slot that
+ *          was launched.
+ *
+ * @param[in] selection  Context to publish.
+ *
+ * @srs     HND-003
+ */
 void boot_selection_write_handover(const boot_selection_t *selection)
 {
     uint32_t raw = BOOT_HANDOVER_MAGIC;
@@ -363,6 +630,15 @@ void boot_selection_write_handover(const boot_selection_t *selection)
     __DSB();
 }
 
+/**
+ * @brief   Record the last selection outcome and rejected slot
+ *          (TRY-008).  See selection.h for the register layout.
+ *
+ * @param[in] outcome   One of the @ref BOOT_OUTCOME_* codes.
+ * @param[in] rejected  Slot index of the rejected slot, or 0 for none.
+ *
+ * @srs     TRY-008
+ */
 void boot_outcome_set(uint8_t outcome, boot_slot_t rejected)
 {
     uint32_t raw = BOOT_OUTCOME_MAGIC;
@@ -373,12 +649,30 @@ void boot_outcome_set(uint8_t outcome, boot_slot_t rejected)
     __DSB();
 }
 
+/**
+ * @brief   Clear the last-outcome record (RTC_BKP3R).
+ *
+ * @srs     TRY-008
+ */
 void boot_outcome_clear(void)
 {
     *bkp(3) = 0U;
     __DSB();
 }
 
+/**
+ * @brief   Read the last selection outcome and rejected slot
+ *          (TRY-008).
+ *
+ * @param[out] rejected  On exit, holds the rejected slot index, or is
+ *                       left untouched when `NULL`.  When no record is
+ *                       present, *rejected is set to `BOOT_SLOT_A` as
+ *                       a neutral default (slot A) for the caller.
+ * @return  One of the @ref BOOT_OUTCOME_* codes; `BOOT_OUTCOME_UNKNOWN`
+ *          when the record is absent or its magic does not match.
+ *
+ * @srs     TRY-008
+ */
 uint8_t boot_outcome_get(boot_slot_t *rejected)
 {
     uint32_t raw = *bkp(3);
