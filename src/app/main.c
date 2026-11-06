@@ -1,15 +1,36 @@
-/*
- * boot - A/B bootloader entry point
+/**
+ * @file    main.c
+ * @brief   A/B bootloader entry point and reset flow.
  *
- * Author:  Sandesh Ghimire <sandesh@soccentric.com>
- * Date:    2026-11-03
- * Target:  NUCLEO-F767ZI (STM32F767ZIT6), dual-bank flash
- * SRS:     SRS-BOOT-F767 Appendix A: BSAFE-005, BGEN-008, ENT-001..005,
+ * @details
+ * This is the top-level program of the bootloader image.  It wires
+ * together the individual BSP / selection / protocol modules into the
+ * full boot sequence:
+ *
+ * 1. `HAL_Init()`, `.ramfunc` relocation, LED + button GPIO setup.
+ * 2. Clock initialisation - if it fails the board enters the red
+ *    error loop (a fatal, non-recoverable condition).
+ * 3. Flash is *locked by default*: no flash writes are issued until the
+ *    dual-bank mode check (BSAFE-005) has passed.
+ * 4. First scan + choose; wrong flash mode traps in the diagnostic
+ *    loop (still answering HWLINK so a host can read the reason).
+ * 5. Trial-limit enforcement (TRY-003), including the RAM-only fallback
+ *    if the REJECTED metadata record cannot be programmed.
+ * 6. Stay-request (ENT-002) and B1 held at reset (ENT-003) evaluation,
+ *    then the 500 ms Hello window (ENT-001).
+ * 7. Update mode (ENT-004/005) when requested; otherwise, trial
+ *    bookkeeping, IWDG start, and hand-over to the chosen slot.
+ *
+ * The flow is intentionally linear in `main()`: every step either
+ * returns normally (to the next step) or never returns at all (error
+ * loops and update mode), which makes the state transitions obvious from
+ * a single reading of the source.
+ *
+ * @author  Sandesh Ghimire <sandesh@soccentric.com>
+ * @date    2026-11-03
+ * @target  NUCLEO-F767ZI (STM32F767ZIT6), dual-bank flash
+ * @srs     SRS-BOOT-F767 Appendix A: BSAFE-005, BGEN-008, ENT-001..005,
  *          SEL-001..004, TRY-001..008, HND-001..005
- *
- * Reset flow: flash mode check, metadata scan, trial-limit handling, A/B
- * selection, stay-request/B1 checks, 500 ms Hello window, update mode, then
- * trial bookkeeping, IWDG start and hand-over.
  */
 
 #include <stdbool.h>
@@ -26,9 +47,38 @@
 #include "uart3.h"
 #include "update.h"
 
+/**
+ * @name Module-private working state.
+ * @brief The two shared context objects threaded through the selection,
+ *        update and protocol modules for the duration of this boot.
+ * @{
+ */
+
+/** Selection context: scan results, chosen slot, trial and reject state. */
 static boot_selection_t boot_selection;
+
+/** Update context: transfer state for the (optional) in-boot update. */
 static boot_update_t boot_update;
 
+/** @} */
+
+/**
+ * @brief   Configure the user LEDs (output, no pull) and button B1
+ *          (input) GPIOs.
+ *
+ * @details Enables the clocks on GPIOB (LEDs) and GPIOC (button), then
+ *          configures:
+ *
+ * - the three user LEDs as push-pull outputs at low speed (the LEDs are
+ *   slow loads; there is no need to drive them with the high-speed
+ *   buffers),
+ * - the user button B1 as a plain input.  The board already provides an
+ *   external pull-down on this pin (Hardware.md section 9), so no
+ *   internal pull is needed, and the input is sampled with its
+ *   deglitching window in @ref boot_button_held.
+ *
+ * @srs     BGEN-008, ENT-003
+ */
 static void boot_leds_init(void)
 {
     GPIO_InitTypeDef gpio = {0};
@@ -48,14 +98,45 @@ static void boot_leds_init(void)
     HAL_GPIO_Init(BOOT_BTN1_PORT, &gpio);
 }
 
-/* BSAFE-005: BOOT only works with the flash in dual-bank mode. */
+/**
+ * @brief   Check that the flash is configured for dual-bank mode.
+ *
+ * @details BSAFE-005: the A/B slot scheme assumes two independent banks
+ *          (each ~1 MB, bank A at 0x08000000, bank B at 0x08100000).
+ *          If the option byte `nDBANK` is set, the parts of the two
+ *          banks are interleaved as one 2 MB bank and the slot layout
+ *          is invalid - the bootloader must refuse to write anything
+ *          and trap in the diagnostic loop.
+ *
+ * @return  `true`  when the option byte indicates dual-bank mode.
+ * @return  `false` when the parts are interleaved (single-bank mode);
+ *          the caller must enter the wrong-flash-mode diagnostic loop.
+ *
+ * @srs     BSAFE-005
+ */
 static bool boot_flash_is_dual_bank(void)
 {
     return (FLASH->OPTCR & FLASH_OPTCR_nDBANK) == 0U;
 }
 
-/* ENT-003: B1 held at reset keeps the board in BOOT.  Sample it for about
- * 10 ms instead of once, so a bounce or a noise spike cannot trigger it. */
+/**
+ * @brief   Check that button B1 is physically held at reset.
+ *
+ * @details ENT-003: B1 held at reset keeps the board in bootloader for
+ *          this boot (force-update intent).  The pin is sampled ~10
+ *          times at 1 ms spacing (~10 ms total) instead of once, so a
+ *          contact bounce or a single noise spike cannot erroneously
+ *          force the update mode.
+ *
+ * @return  `true`  when the pin read HIGH on every sample across the
+ *          whole window; `false` otherwise (including any sample that
+ *          read LOW).
+ *
+ * @note    Uses `HAL_Delay(1)` between samples, so a working tick is
+ *          required - called after the clock initialisation path.
+ *
+ * @srs     ENT-003
+ */
 static bool boot_button_held(void)
 {
     for (uint32_t i = 0U; i < 10U; i++) {
@@ -67,6 +148,20 @@ static bool boot_button_held(void)
     return true;
 }
 
+/**
+ * @brief   Fatal error loop: LED2 off, LED3 blinking at 4 Hz, spin.
+ *
+ * @details Used for conditions that cannot be recovered from inside the
+ *          bootloader (clock initialisation failure, UART bring-up
+ *          failure).  The board remains powered and JTAG/SWD remains
+ *          available - the LED state is intentionally stable (constant
+ *          red blink) so it is distinguishable from the wrong-flash-mode
+ *          loop in @ref boot_wrong_flash_mode.
+ *
+ * @warning Never returns.
+ *
+ * @srs     BGEN-008
+ */
 static void boot_error_loop(void)
 {
     HAL_GPIO_WritePin(BOOT_LED2_PORT, BOOT_LED2_PIN, GPIO_PIN_RESET);
@@ -76,8 +171,24 @@ static void boot_error_loop(void)
     }
 }
 
-/* BSAFE-005: no valid flash mode, no flash writes.  Still answer HWLINK so
- * a host can read the WRONG_FLASH_MODE detail, and blink LD3. */
+/**
+ * @brief   Wrong-flash-mode diagnostic loop (BSAFE-005).
+ *
+ * @details Behaviour:
+ * - No flash writes are possible - the flash lock in @ref main stays
+ *   off, the only observable side-effect is the LED and the
+ *   protocol endpoint.
+ * - The protocol stack is still initialised (in read-only mode, as the
+ *   lock implies), so a host connected to the UART can read the
+ *   `WRONG_FLASH_MODE` detail and act on it (typically: reprogram the
+ *   option bytes in ST-LINK and re-reset).
+ * - LED3 blinks at 4 Hz (250 ms period) as the visual marker of this
+ *   state.
+ *
+ * @warning Never returns.
+ *
+ * @srs     BSAFE-005
+ */
 static void boot_wrong_flash_mode(void)
 {
     boot_proto_init(&boot_selection, &boot_update);
@@ -97,6 +208,17 @@ static void boot_wrong_flash_mode(void)
     }
 }
 
+/**
+ * @brief   Re-scan the both slots and re-choose the active one, then
+ *          refresh the flash driver's active-slot hint.
+ *
+ * @details Small helper that wraps the "scan -> choose -> publish"
+ *          sequence used in several places in @ref main (after trial
+ *          limit handling, after a failed record program, and after the
+ *          update-mode branch).  Keeping the three calls in one place
+ *          guarantees the order: the flash driver must see the *new*
+ *          active slot before any subsequent write that depends on it.
+ */
 static void boot_rescan_and_choose(void)
 {
     boot_selection_scan(&boot_selection);
@@ -104,6 +226,27 @@ static void boot_rescan_and_choose(void)
     boot_flash_set_active(boot_selection.active, boot_selection.active_valid);
 }
 
+/**
+ * @brief   Bootloader entry point; runs the full reset flow.
+ *
+ * @details See the file-level description for the ordered steps.  The
+ *          two module-private contexts (@ref boot_selection and
+ *          @ref boot_update) are created here and threaded through to
+ *          the selection / update / protocol modules; they are plain
+ *          `static` storage (no heap, no global locks) and live for
+ *          the whole boot.
+ *
+ * @return  Not reached in normal operation: either @ref boot_handover
+ *          is invoked (which does not return) or one of the fatal paths
+ *          (@ref boot_error_loop, @ref boot_wrong_flash_mode, or a
+ *          terminal @ref boot_proto_run) spins forever.  The `int`
+ *          return type is kept for the C runtime's expectation of
+ *          `main`; any return here is a defect and will be visible
+ *          because the IWDG (started just before hand-over) would
+ *          otherwise reset the board immediately.
+ *
+ * @srs     Appendix A (see file header)
+ */
 int main(void)
 {
     (void)HAL_Init();
