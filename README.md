@@ -41,7 +41,8 @@ tools/bootctl.py update app-signed.img --activate --wait  # update an applicatio
 BOOT only accepts signed images.  The default build trusts the published
 development key in [keys/](keys/README.md), which is fine on the bench but must
 never ship: generate a product key and build with
-`-DBOOT_SIGNING_KEY_SOURCE=<path to its pubkey .c>`.
+`-DBOOT_SIGNING_KEY_SOURCE=<path to its pubkey .c>`. The full guide, including how to sign
+application images, is [docs/IMAGE_SIGNING.md](docs/IMAGE_SIGNING.md).
 
 ## Related projects
 
