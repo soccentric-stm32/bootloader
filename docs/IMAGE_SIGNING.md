@@ -209,9 +209,9 @@ python3 tools/bootctl.py --port /dev/ttyACM0 update --both --a a.img --b b.img
 `bootctl info` shows each slot's security counter and the current floor. If
 the board is running the application, `bootctl` switches it to BOOT first.
 
-**From the flash GUI** ([bootloader-gui](https://github.com/soccentric-stm32/bootloader-gui), `make gui`), pick one of the five firmware
-projects in the sidebar (app-c-freertos, app-c-zephyr, app-rust-freertos,
-app-rust-zephyr, validation-firmware) and press **Build, Sign & Flash**:
+**From the flash GUI** ([bootloader-gui](https://github.com/soccentric-stm32/bootloader-gui), `make gui`), pick one of the six firmware
+projects in the sidebar (app-c-freertos, app-c-zephyr, app-rust-embassy,
+app-rust-freertos, app-rust-zephyr, validation-firmware) and press **Build, Sign & Flash**:
 
 1. The GUI clones the repository if it is missing, runs its build, signs
    the image from [§7](#7-add-signing-to-an-application) into
