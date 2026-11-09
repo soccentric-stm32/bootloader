@@ -6,9 +6,7 @@
 | `bootctl.py` | HWLINK command-line updater: `info`, `update` (`--both`, `--a/--b`, `--json`), `activate`, `enter`, `wait`, `catch`, `reset`, `set-baud`. |
 | `check_contracts.py` | Cross-check layout constants, generated schema and an application repo's `boot_contract.h`/`hwlink.fbs`. |
 | `package_hwlink.py` | Publish the canonical `hwlink.fbs`, generated Python package, `mkimage.py`, `boot_layout.h` and vendored runtime bundle (P3-8). |
-| `gui/` | The flash GUI: `window.py` (main window), `pages.py` (bootloader and project pages), `projects.py` (the five firmware projects), `runner.py` (job queue), `device.py` (BootInfo, port discovery), `widgets.py`, `theme.py`, `icons.py`. |
 | `provision.sh` | Set dual-bank option bytes, mass-erase and flash BOOT over SWD with OpenOCD. |
-| `flash_gui.py` | BOOT Flasher, the PySide6 GUI: build and flash BOOT over SWD; clone, build, sign and flash the five firmware projects through BOOT. |
 
 `bootctl.py` needs only pyserial:
 
@@ -40,53 +38,8 @@ flatc --python -o tools/generated protocol/hwlink.fbs
 
 ## Flash GUI
 
-`flash_gui.py` (BOOT Flasher) does two things: flash the bootloader, and
-flash the five firmware projects.  The sidebar has one page for each; its
-**Board** panel shows the ST-LINK port and what BOOT reports (version,
-active and next slot, trusted key, security floor).  The panel reads with
-`bootctl --no-enter`, so it never stops a running application.
-
-**Bootloader** builds BOOT (`make build`) and programs it over SWD.  By
-default both run in the `stm32-dev` container through
-`scripts/docker-dev.sh`; turn **Build in Docker** off to use the host's
-cmake and OpenOCD.  **More** has Probe, Reset, Provision (option bytes,
-mass erase, BOOT) and Erase; the last two ask first.
-
-**Applications**: app-c-freertos, app-c-zephyr, app-rust-freertos,
-app-rust-zephyr and validation-firmware.  **Build, Sign & Flash** runs:
-
-1. **Clone**, when the repository is missing: `git clone` with the URL from
-   the workspace `repos.yaml`, next to this repository.
-2. **Build**: the project's `make build`.
-3. **Sign**: `mkimage.py --sign` into `<image>-signed.img`, then
-   `--inspect` (BSAFE-006).  *Match board* signs with BOOT's floor; if the
-   floor is unknown the step reads it first.
-4. **Flash**: `bootctl.py update --activate --wait`.
-
-Before flashing, the page warns if the key differs from the one BOOT
-trusts, or if the counter is below the floor or would raise it.  Each step
-also runs on its own.  **More** has Pull, Open folder, Enter bootloader and
-Reset.
-
-**Board ▸ Recover Board into BOOT** reaches BOOT when the running
-application does not answer HWLINK (HWVAL while it runs its test suite):
-`bootctl catch` keeps sending Hello while the board is reset over SWD, so
-one lands in BOOT's 500 ms listen window.  When the active slot is still on
-trial, BOOT will not activate a new image; the GUI offers to reset the board
-so the trial ends (the image confirms, or BOOT rejects it after three
-starts), and stays off the serial port meanwhile.
-
-```sh
-make gui-deps       # one-time: PySide6, pyserial, cryptography
-make gui            # launch the GUI
-```
-
-Shortcuts: `Ctrl+1`..`Ctrl+6` pages, `Ctrl+Enter` run the whole pipeline,
-`Ctrl+B` build, `Ctrl+Shift+Enter` flash only, `Esc` cancel, `F5` refresh
-the board, `Ctrl+R` reset, `Ctrl+K` clear the output.  The GUI follows the
-system light/dark setting.  Commands, paths, keys and counters are
-remembered per page.  `FIRMWARE_WORKSPACE` points at another workspace
-directory.
-
-`make gui-check` byte-compiles the app and runs as part of `make build`, but
-PySide6 is only needed to run the GUI.
+The BOOT Flasher GUI lives in the
+[bootloader-gui](https://github.com/soccentric-stm32/bootloader-gui)
+repository.  It drives `bootctl.py`, `mkimage.py`, `provision.sh`,
+`scripts/docker-dev.sh` and `keys/` from this repository, expected as a
+sibling checkout (`BOOTLOADER_DIR` points at another one).

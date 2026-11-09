@@ -178,7 +178,7 @@ copies in CI.
 
 ---
 
-## 3. GUI (`tools/flash_gui.py`)
+## 3. GUI (`flash_gui.py`, now in the bootloader-gui repository)
 
 ### P1-1 One guided workflow
 

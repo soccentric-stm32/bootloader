@@ -20,7 +20,7 @@ A bare-metal A/B bootloader for the NUCLEO-F767ZI (STM32F767ZI). It uses the dua
 - About 28 KB of flash; the build fails if it outgrows 32 KB
 - Never writes option bytes, OTP, protection or its own sectors
 - `bootctl.py` host tool: info, update, activate, enter, wait, reset, set-baud, JSON output
-- `flash_gui.py` (BOOT Flasher): PySide6 GUI that builds and flashes BOOT, and clones, builds, signs and flashes the five firmware projects
+- The BOOT Flasher GUI (build and flash BOOT, sign and flash the five firmware projects) is in [bootloader-gui](https://github.com/soccentric-stm32/bootloader-gui)
 - `mkimage.py`: image wrapping, signing, key generation, inspection, metadata sectors and combined factory HEX
 - `provision.sh`: option bytes, mass erase and bootloader programming over SWD
 - Host C tests against a simulated 2 MB flash
@@ -52,6 +52,7 @@ application images, is [docs/IMAGE_SIGNING.md](docs/IMAGE_SIGNING.md).
 - [app-rust-freertos](https://github.com/soccentric-stm32/app-rust-freertos) — Demo application in Rust on Embassy
 - [app-rust-zephyr](https://github.com/soccentric-stm32/app-rust-zephyr) — Demo application in Rust on Zephyr RTOS
 - [validation-firmware](https://github.com/soccentric-stm32/validation-firmware) — HWVAL hardware validation firmware
+- [bootloader-gui](https://github.com/soccentric-stm32/bootloader-gui) — BOOT Flasher: desktop GUI to flash BOOT and the firmware projects
 - [validation-gui](https://github.com/soccentric-stm32/validation-gui) — HWVAL Studio: desktop GUI for tests, updates and flashing
 - [factory-station](https://github.com/soccentric-stm32/factory-station) — HWVAL Factory: end-of-line test and provisioning station
 - [soccentric-stm32.github.io](https://github.com/soccentric-stm32/soccentric-stm32.github.io) — Project website

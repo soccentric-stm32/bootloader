@@ -23,9 +23,7 @@
 #   make lint-strict    clang-tidy, failing on any finding
 #   make probe          detect the ST-LINK and the target chip
 #   make size           show the firmware size
-#   make gui            launch the PySide6 flash GUI (tools/flash_gui.py)
-#   make gui-deps       install the GUI dependencies (PySide6, cryptography)
-#   make gui-check      byte-compile the GUI app (runs as part of build)
+#   make tools-check    byte-compile the host tools (runs as part of build)
 #   make test           host C tests, Python tests and contract check
 #   make package-hwlink publish the canonical HWLINK contract bundle
 #   make image          build the stm32-dev Docker image
@@ -44,13 +42,11 @@ BUILD_DIR  := build
 ELF        := $(BUILD_DIR)/boot.elf
 DEV        := scripts/docker-dev.sh
 OPENOCD    := openocd -f board/st_nucleo_f7.cfg
-GUI        := tools/flash_gui.py
-GUI_MODULES := $(wildcard tools/gui/*.py)
 
 .DEFAULT_GOAL := build
 
 .PHONY: all build configure clean rebuild lint lint-strict flash erase reset \
-        debug gdbserver serial probe size image gui gui-deps gui-check \
+        debug gdbserver serial probe size image tools-check \
         test test-host test-python test-contract package-hwlink help
 
 all: build
@@ -63,7 +59,7 @@ configure:
 		$(DEV) run cmake -S /work -B /work/$(BUILD_DIR) -G Ninja -DCMAKE_BUILD_TYPE=$(BUILD_TYPE); \
 	fi
 
-build: configure gui-check
+build: configure tools-check
 	$(DEV) run cmake --build /work/$(BUILD_DIR)
 
 clean:
@@ -84,18 +80,12 @@ size:
 	@test -f $(ELF) || { echo "error: $(ELF) not found, run make build"; exit 1; }
 	$(DEV) run arm-none-eabi-size /work/$(ELF)
 
-# The GUI is a host-side PySide6 app; it drives scripts/docker-dev.sh, so it
-# never needs the container's toolchain.  gui-check keeps it compiling as
-# part of every build without requiring PySide6 to be installed.
-gui-check:
-	$(PYTHON) -m py_compile $(GUI) $(GUI_MODULES) tools/bootctl.py \
-		tools/mkimage.py tools/check_contracts.py tools/package_hwlink.py
-
-gui: gui-check
-	$(PYTHON) $(GUI)
-
-gui-deps:
-	$(PYTHON) -m pip install -r tools/requirements-gui.txt
+# The host tools are plain Python; compiling them keeps them from rotting as
+# part of every build without requiring any package to be installed.  The
+# flash GUI that drives them lives in the bootloader-gui repository.
+tools-check:
+	$(PYTHON) -m py_compile tools/bootctl.py tools/mkimage.py \
+		tools/check_contracts.py tools/package_hwlink.py
 
 test: test-host test-python test-contract
 
