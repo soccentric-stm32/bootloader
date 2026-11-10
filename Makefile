@@ -43,7 +43,7 @@ ELF        := $(BUILD_DIR)/boot.elf
 DEV        := scripts/docker-dev.sh
 OPENOCD    := openocd -f board/st_nucleo_f7.cfg
 
-.DEFAULT_GOAL := build
+.DEFAULT_GOAL := help
 
 .PHONY: all build configure clean rebuild lint lint-strict flash erase reset \
         debug gdbserver serial probe size image tools-check \
