@@ -471,9 +471,16 @@ def write_ihex(path: pathlib.Path, segments: list[tuple[int, bytes]]) -> None:
 
 
 def factory_segments(boot: pathlib.Path, image_a: pathlib.Path,
-                     image_b: pathlib.Path, seq_a: int,
-                     seq_b: int) -> list[tuple[int, bytes]]:
-    """BOOT + slot A/B + both metadata sectors at physical addresses."""
+                     image_b: pathlib.Path | None, seq_a: int,
+                     seq_b: int, confirmed_a: bool = True,
+                     confirmed_b: bool = True) -> list[tuple[int, bytes]]:
+    """BOOT + slot A (and optionally slot B) at physical addresses.
+
+    ``image_b=None`` leaves slot B and metadata B erased, which is the
+    shipped Flow-A layout (P3-02).  ``confirmed_b=False`` writes an
+    ACTIVATED-but-not-CONFIRMED test image into slot B so BOOT boots it on
+    trial and falls back to the CONFIRMED slot A (Flow B).
+    """
     if boot.suffix.lower() == ".hex":
         segments = read_ihex(boot)
     elif boot.suffix.lower() == ".bin":
@@ -486,12 +493,15 @@ def factory_segments(boot: pathlib.Path, image_a: pathlib.Path,
             raise ValueError(
                 f"BOOT data at 0x{address:08x} exceeds the 32 KB region")
 
-    for slot, image, sequence, slot_base, meta_base in (
-            ("A", image_a, seq_a, SLOT_A_BASE, META_A_BASE),
-            ("B", image_b, seq_b, SLOT_B_BASE, META_B_BASE)):
+    planned = [
+        ("A", image_a, seq_a, SLOT_A_BASE, META_A_BASE, confirmed_a),
+        ("B", image_b, seq_b, SLOT_B_BASE, META_B_BASE, confirmed_b),
+    ]
+    for slot, image, sequence, slot_base, meta_base, confirmed in planned:
+        if image is None:
+            continue
         header, body, image_crc = read_image(image)
-        metadata = build_metadata(header, image_crc, sequence,
-                                  confirmed=True)
+        metadata = build_metadata(header, image_crc, sequence, confirmed)
         if len(body) > SLOT_SIZE:
             raise ValueError(f"slot {slot}: image exceeds the slot")
         segments.append((slot_base, body))
@@ -632,8 +642,12 @@ def main() -> int:
                         help=".hex or .bin BOOT image for --factory-hex")
     parser.add_argument("--slot-a", type=pathlib.Path,
                         help="slot A .img for --factory-hex")
-    parser.add_argument("--slot-b", type=pathlib.Path,
-                        help="slot B .img for --factory-hex")
+    parser.add_argument("--slot-b", type=pathlib.Path, default=None,
+                        help="slot B .img for --factory-hex (omit to leave "
+                             "slot B empty)")
+    parser.add_argument("--slot-b-unconfirmed", action="store_true",
+                        help="--factory-hex: write slot B ACTIVATED but not "
+                             "CONFIRMED (a trial test image for Flow B)")
     parser.add_argument("--seq-a", type=int, default=1)
     parser.add_argument("--seq-b", type=int, default=2)
     args = parser.parse_args()
@@ -686,11 +700,12 @@ def main() -> int:
         return 0
 
     if args.factory_hex is not None:
-        if not (args.boot and args.slot_a and args.slot_b):
-            parser.error("--factory-hex needs --boot, --slot-a and --slot-b")
+        if not (args.boot and args.slot_a):
+            parser.error("--factory-hex needs --boot and --slot-a")
         try:
-            segments = factory_segments(args.boot, args.slot_a, args.slot_b,
-                                        args.seq_a, args.seq_b)
+            segments = factory_segments(
+                args.boot, args.slot_a, args.slot_b, args.seq_a, args.seq_b,
+                confirmed_b=not args.slot_b_unconfirmed)
             write_ihex(args.factory_hex, segments)
         except (OSError, ValueError) as error:
             print(f"mkimage: {error}", file=sys.stderr)

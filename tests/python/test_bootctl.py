@@ -668,3 +668,32 @@ def test_update_begin_carries_signed_header(tmp_path):
         device.join(timeout=2)
     # BOOT rebuilds exactly the header that was signed.
     assert device.begin_header == image_path.read_bytes()[:256]
+
+
+def test_factory_hex_can_leave_slot_b_empty(tmp_path):
+    image_a = _make_image(tmp_path, "a.img")
+    boot = tmp_path / "boot.bin"
+    boot.write_bytes(b"BOOT")
+    segments = mkimage.factory_segments(boot, image_a, None, 1, 2)
+    addresses = [address for address, _data in segments]
+    assert 0x0810C000 not in addresses
+    assert 0x08108000 not in addresses
+    _header, body, _crc = mkimage.read_image(image_a)
+    assert (0x0800C000, body) in segments
+
+
+def test_factory_hex_trial_slot_b_is_not_confirmed(tmp_path):
+    image_a = _make_image(tmp_path, "a.img")
+    image_b = _make_image(tmp_path, "b.img")
+    boot = tmp_path / "boot.bin"
+    boot.write_bytes(b"BOOT")
+    segments = mkimage.factory_segments(
+        boot, image_a, image_b, 1, 2, confirmed_b=False)
+    meta_b = dict(segments)[0x08108000]
+    confirmed = meta_b[
+        mkimage.META_CONFIRMED_OFFSET:
+        mkimage.META_CONFIRMED_OFFSET + mkimage.META_RECORD_SIZE]
+    assert confirmed == b"\xff" * mkimage.META_RECORD_SIZE
+    activated = struct.unpack_from(
+        "<I", meta_b, mkimage.META_ACTIVATED_OFFSET + 4)[0]
+    assert activated == 2
