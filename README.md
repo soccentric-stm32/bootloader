@@ -2,6 +2,8 @@
 
 A bare-metal A/B bootloader for the NUCLEO-F767ZI (STM32F767ZI). It uses the dual-bank flash of the STM32F7 to hold two application slots, receives new images over the ST-LINK virtual COM port using the HWLINK protocol, checks every image with CRC32 and boots a new image on trial. If the application does not confirm itself within three starts, the bootloader rolls back to the last confirmed slot automatically. Host tools for building images, updating devices and factory provisioning are included, together with host and protocol tests. It is the foundation every application in this project family runs on.
 
+[![The bootloader updating and starting an image on the NUCLEO-F767ZI](https://raw.githubusercontent.com/soccentric-stm32/soccentric-stm32.github.io/main/assets/shots/term-bootloader.webp)](https://soccentric-stm32.github.io/#bootloader)
+
 ## Features
 
 - Dual-bank A/B layout: 32 KB bootloader, 16 KB metadata and a 976 KB slot per bank
