@@ -227,6 +227,15 @@ static void boot_rescan_and_choose(void)
     boot_flash_set_active(boot_selection.active, boot_selection.active_valid);
 }
 
+/** One informational debug line; empty when BOOT_DEBUG_UART=0. */
+static void boot_dbg_line(const char *text)
+{
+    (void)text;
+    boot_dbg_begin('I');
+    boot_dbg_str(text);
+    boot_dbg_end();
+}
+
 #if BOOT_DEBUG_UART
 /** BDBG-001: one debug line per slot, then the selection result. */
 static void boot_dbg_selection(void)
@@ -307,6 +316,7 @@ int main(void)
     boot_dbg_str("start v" BOOT_VERSION_STR " " BOOT_GIT_COMMIT ", reset ");
     boot_dbg_hex(RCC->CSR);
     boot_dbg_end();
+    boot_dbg_line("init: clock 216 MHz, PLL locked");
 
     /* No flash write is possible until the mode check has passed. */
     boot_flash_set_allowed(false);
@@ -315,7 +325,9 @@ int main(void)
     if (!boot_uart3_init()) {
         boot_error_loop();
     }
+    boot_dbg_line("init: HWLINK on USART3, 115200 8N1");
 
+    boot_dbg_line("scan: searching for an application");
     boot_rescan_and_choose();
 
     if (!boot_flash_is_dual_bank()) {
@@ -325,6 +337,7 @@ int main(void)
         boot_wrong_flash_mode();   /* does not return */
     }
     boot_flash_set_allowed(true);
+    boot_dbg_line("init: flash dual bank, writes enabled");
 
     /* TRY-003: a pending slot that has used up its trials is rejected and
      * the selection is made again. */
@@ -372,6 +385,7 @@ int main(void)
 
     if (!force_update) {
         /* ENT-001: 500 ms window for a Hello. */
+        boot_dbg_line("listen: 500 ms for a host");
         if (boot_proto_listen_for_hello(BOOT_LISTEN_WINDOW_MS)) {
             force_update = true;
         }
