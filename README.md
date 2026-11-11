@@ -2,7 +2,28 @@
 
 A bare-metal A/B bootloader for the NUCLEO-F767ZI (STM32F767ZI). It uses the dual-bank flash of the STM32F7 to hold two application slots, receives new images over the ST-LINK virtual COM port using the HWLINK protocol, checks every image with CRC32 and boots a new image on trial. If the application does not confirm itself within three starts, the bootloader rolls back to the last confirmed slot automatically. Host tools for building images, updating devices and factory provisioning are included, together with host and protocol tests. It is the foundation every application in this project family runs on.
 
-[![The bootloader updating and starting an image on the NUCLEO-F767ZI](https://raw.githubusercontent.com/soccentric-stm32/soccentric-stm32.github.io/main/assets/shots/term-bootloader.webp)](https://soccentric-stm32.github.io/#bootloader)
+## Debug terminal
+
+The debug log from a reset on a NUCLEO-F767ZI (USART6, 115200 8N1), recorded from the board. [Watch it replay line by line](https://soccentric-stm32.github.io/#bootloader) on the project page.
+
+```console
+$ openocd -f board/st_nucleo_f7.cfg -c "init; reset run; shutdown"
+[      0] BOOT I start v0.1.0 d389f50d03e7, reset 0x04000000
+[      5] BOOT I init: clock 216 MHz, PLL locked
+[      9] BOOT I init: HWLINK on USART3, 115200 8N1
+[     14] BOOT I scan: searching for an application
+[    335] BOOT I init: flash dual bank, writes enabled
+[    339] BOOT I slot A: ok, confirmed
+[    343] BOOT I slot B: ok, confirmed
+[    346] BOOT I sel: slot A confirmed, count 0
+[    351] BOOT I listen: 500 ms for a host
+[    854] BOOT I boot slot A
+[      1] C-FRT I start v0.1.0 d501c03a148d, slot A confirmed, reset reset pin
+[      1] C-FRT I task 3 Health: watches task check-ins, kicks the watchdog, confirms the slot
+[      1] C-FRT I task 4 Comms: answers the factory station: reads and writes the factory data window
+[      1] C-FRT I task 2 Button: debounces B1, short press cycles the LED pattern, long press resets it
+[      1] C-FRT I task 1 LED: drives LD1-LD3 patterns, LD3 shows health and fault state
+```
 
 ## Features
 
