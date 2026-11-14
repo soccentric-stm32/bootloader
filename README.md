@@ -6,6 +6,11 @@ A bare-metal A/B bootloader for the NUCLEO-F767ZI (STM32F767ZI). It uses the dua
 
 The debug log from a reset on a NUCLEO-F767ZI (USART6, 115200 8N1), recorded from the board. [Watch it replay line by line](https://soccentric-stm32.github.io/#bootloader) on the project page.
 
+![Debug terminal output from a reset on a NUCLEO-F767ZI](docs/debug-terminal.svg)
+
+<details>
+<summary>Plain text</summary>
+
 ```console
 $ openocd -f board/st_nucleo_f7.cfg -c "init; reset run; shutdown"
 [      0] BOOT I start v0.1.0 d389f50d03e7, reset 0x04000000
@@ -24,6 +29,8 @@ $ openocd -f board/st_nucleo_f7.cfg -c "init; reset run; shutdown"
 [      1] C-FRT I task 2 Button: debounces B1, short press cycles the LED pattern, long press resets it
 [      1] C-FRT I task 1 LED: drives LD1-LD3 patterns, LD3 shows health and fault state
 ```
+
+</details>
 
 ## Features
 
