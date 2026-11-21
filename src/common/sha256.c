@@ -89,6 +89,7 @@ static void compress(uint32_t state[8], const uint8_t block[64])
     }
 }
 
+/** @brief Initialise a streaming context; see sha256.h. */
 void boot_sha256_init(boot_sha256_t *ctx)
 {
     /* Initial hash value H(0), FIPS 180-4 section 5.3.3. */
@@ -101,6 +102,7 @@ void boot_sha256_init(boot_sha256_t *ctx)
     ctx->used   = 0U;
 }
 
+/** @brief Absorb input bytes; see sha256.h. */
 void boot_sha256_update(boot_sha256_t *ctx, const void *data, size_t len)
 {
     const uint8_t *p = (const uint8_t *)data;
@@ -122,6 +124,7 @@ void boot_sha256_update(boot_sha256_t *ctx, const void *data, size_t len)
     }
 }
 
+/** @brief Finish and write the digest; see sha256.h. */
 void boot_sha256_final(boot_sha256_t *ctx, uint8_t digest[BOOT_SHA256_SIZE])
 {
     uint64_t bits = ctx->length * 8U;
@@ -146,6 +149,7 @@ void boot_sha256_final(boot_sha256_t *ctx, uint8_t digest[BOOT_SHA256_SIZE])
     }
 }
 
+/** @brief Hash a buffer in one call; see sha256.h. */
 void boot_sha256(const void *data, size_t len,
                  uint8_t digest[BOOT_SHA256_SIZE])
 {

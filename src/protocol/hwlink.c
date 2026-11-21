@@ -1,24 +1,27 @@
-/*
- * hwlink.c - HWLINK framing: COBS, CRC-32 and the 8-byte header
- *
- * Author:  Sandesh Ghimire <sandesh@soccentric.com>
- * Date:    2026-11-03
- * Target:  STM32F767ZIT6
- * SRS:     HWLINK LNK-001..LNK-005 (SRS-GUI-F767 Appendix A)
- *
- * Frame before COBS: proto[1] flags[1] seq[2] payload[n] crc32[4], all
- * little-endian except the single-byte fields.  The delimiter 0x00 is not
- * part of the CRC.
+/**
+ * @file    hwlink.c
+ * @brief   HWLINK framing: COBS, CRC-32 and the 8-byte header.
+ * @details Frame before COBS: proto[1] flags[1] seq[2] payload[n] crc32[4],
+ *          all little-endian except the single-byte fields.  The delimiter
+ *          0x00 is not part of the CRC.
+ * @author  Sandesh Ghimire <sandesh@soccentric.com>
+ * @date    2026-11-03
+ * @target  STM32F767ZIT6
+ * @srs     HWLINK LNK-001..LNK-005 (SRS-GUI-F767 Appendix A)
  */
 
 #include <string.h>
 #include "crc32.h"
 #include "hwlink.h"
 
+/** Protocol, flags and sequence fields. */
 #define HWLINK_HEADER_SIZE   4U
+/** Trailing CRC-32 field. */
 #define HWLINK_CRC_SIZE      4U
+/** Header plus CRC, i.e. the non-payload part of a frame. */
 #define HWLINK_OVERHEAD      (HWLINK_HEADER_SIZE + HWLINK_CRC_SIZE)
 
+/** @brief Build a raw frame; see @ref hwlink_build_raw. */
 bool hwlink_build_raw(const uint8_t *payload, size_t payload_len,
                       uint8_t flags, uint16_t seq,
                       uint8_t *raw, size_t raw_capacity, size_t *raw_len)
@@ -46,6 +49,7 @@ bool hwlink_build_raw(const uint8_t *payload, size_t payload_len,
     return true;
 }
 
+/** @brief COBS-encode a frame; see @ref hwlink_cobs_encode. */
 bool hwlink_cobs_encode(const uint8_t *raw, size_t raw_len,
                         uint8_t *out, size_t out_capacity, size_t *out_len)
 {
@@ -98,6 +102,7 @@ bool hwlink_cobs_encode(const uint8_t *raw, size_t raw_len,
     return true;
 }
 
+/** @brief COBS-decode a frame; see @ref hwlink_cobs_decode. */
 int hwlink_cobs_decode(const uint8_t *in, size_t in_len,
                        uint8_t *out, size_t out_capacity, size_t *out_len)
 {
@@ -137,6 +142,7 @@ int hwlink_cobs_decode(const uint8_t *in, size_t in_len,
     return 0;
 }
 
+/** @brief Validate and split a raw frame; see @ref hwlink_decode_raw. */
 bool hwlink_decode_raw(const uint8_t *raw, size_t raw_len,
                        uint8_t *payload, size_t payload_capacity,
                        size_t *payload_len, uint8_t *flags, uint16_t *seq)

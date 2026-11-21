@@ -227,7 +227,7 @@ static void boot_rescan_and_choose(void)
     boot_flash_set_active(boot_selection.active, boot_selection.active_valid);
 }
 
-/** One informational debug line; empty when BOOT_DEBUG_UART=0. */
+/** @brief Emit one informational debug line; empty without debug output. */
 static void boot_dbg_line(const char *text)
 {
     (void)text;
@@ -237,7 +237,7 @@ static void boot_dbg_line(const char *text)
 }
 
 #if BOOT_DEBUG_UART
-/** BDBG-001: one debug line per slot, then the selection result. */
+/** @brief Print one debug line per slot and the selection result. */
 static void boot_dbg_selection(void)
 {
     static const char *const header_text[] = {
@@ -273,6 +273,7 @@ static void boot_dbg_selection(void)
     boot_dbg_end();
 }
 #else
+/** @brief No-op when debug output is disabled. */
 static inline void boot_dbg_selection(void) {}
 #endif
 

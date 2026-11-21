@@ -19,6 +19,7 @@
 
 #define RECORD_WORDS (BOOT_META_RECORD_SIZE / 4U) /**< Words per record. */
 
+/** @brief Test for the header magic; see metadata.h. */
 bool boot_meta_header_present(boot_slot_t slot)
 {
     const volatile uint32_t *raw =
@@ -26,6 +27,7 @@ bool boot_meta_header_present(boot_slot_t slot)
     return raw[0] == BOOT_IMAGE_MAGIC;
 }
 
+/** @brief Copy the slot's 256-byte header; see metadata.h. */
 bool boot_meta_header_read(boot_slot_t slot, boot_image_header_t *header)
 {
     if (header == NULL) {
@@ -36,6 +38,7 @@ bool boot_meta_header_read(boot_slot_t slot, boot_image_header_t *header)
     return header->magic == BOOT_IMAGE_MAGIC;
 }
 
+/** @brief Read one CRC-checked record; see metadata.h. */
 bool boot_meta_read_record(boot_slot_t slot, uint32_t offset, uint32_t magic,
                            uint32_t *value, bool *present)
 {
@@ -57,6 +60,7 @@ bool boot_meta_read_record(boot_slot_t slot, uint32_t offset, uint32_t magic,
     return ok;
 }
 
+/** @brief Program and verify the header record; see metadata.h. */
 bool boot_meta_write_header(boot_slot_t slot,
                             const boot_image_header_t *header)
 {
@@ -67,6 +71,7 @@ bool boot_meta_write_header(boot_slot_t slot,
                                    sizeof(*header));
 }
 
+/** @brief Build and program one 32-byte record; see metadata.h. */
 bool boot_meta_write_record(boot_slot_t slot, uint32_t offset,
                             uint32_t magic, uint32_t value)
 {
@@ -81,6 +86,7 @@ bool boot_meta_write_record(boot_slot_t slot, uint32_t offset,
                                    BOOT_META_RECORD_SIZE);
 }
 
+/** @brief Count contiguous TRIAL records; see metadata.h. */
 uint32_t boot_meta_trial_count(boot_slot_t slot)
 {
     uint32_t count = 0U;
@@ -102,6 +108,7 @@ uint32_t boot_meta_trial_count(boot_slot_t slot)
     return count;
 }
 
+/** @brief Append TRIAL record number @p attempt; see metadata.h. */
 bool boot_meta_write_trial(boot_slot_t slot, uint32_t attempt)
 {
     if (attempt == 0U || attempt > BOOT_META_TRIAL_RECORDS) {

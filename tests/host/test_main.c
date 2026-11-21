@@ -1,13 +1,17 @@
-/*
- * test_main.c - host unit tests for the boot selection/update state
- *
- * Builds src/app/selection.c and src/app/update.c against an in-memory
- * 2 MB dual-bank flash and fake RTC backup registers.  Covers torn records,
- * trial persistence, the P0-1 update-during-trial guard, sequence
- * saturation and the P0-2 RAM rejection rescan.  BSAFE-006: SHA-256
- * vectors, signatures made by mkimage.py and by uECC_sign(), signature and
- * digest checks in the update path and at boot, and the anti-rollback
- * floor.
+/**
+ * @file    test_main.c
+ * @brief   Host unit tests for boot selection, metadata and update.
+ * @details Builds src/app/selection.c and src/app/update.c against an
+ *          in-memory 2 MB dual-bank flash and fake RTC backup registers.
+ *          Covers torn records, trial persistence, the P0-1
+ *          update-during-trial guard, sequence saturation and the P0-2 RAM
+ *          rejection rescan.  BSAFE-006: SHA-256 vectors, signatures made by
+ *          mkimage.py and by uECC_sign(), signature and digest checks in the
+ *          update path and at boot, and the anti-rollback floor.
+ * @author  Sandesh Ghimire <sandesh@soccentric.com>
+ * @date    2026-11-03
+ * @target  Host (Linux/Windows), not the STM32
+ * @srs     SEL-*, TRY-*, UPD-*, BSAFE-006
  */
 
 #include <stdbool.h>
@@ -47,6 +51,7 @@ enum slot_state {
     SLOT_CONFIRMED = 2
 };
 
+/** @brief Build a minimal 16-byte image body with valid vectors. */
 static void make_body(uint8_t body[16])
 {
     memset(body, 0, 16U);
@@ -56,8 +61,7 @@ static void make_body(uint8_t body[16])
     memcpy(&body[4], &entry, sizeof(entry));
 }
 
-/* BSAFE-006: turn a finalized header into a signed version 2 header for
- * body, the way tools/mkimage.py does, with the host-test key. */
+/** @brief Sign a header the way tools/mkimage.py does (BSAFE-006). */
 static void sign_header(boot_image_header_t *header, const uint8_t *body,
                         uint32_t body_len, uint32_t security_counter)
 {
@@ -73,6 +77,13 @@ static void sign_header(boot_image_header_t *header, const uint8_t *body,
     boot_image_header_finalize(header);
 }
 
+/**
+ * @brief   Program a complete signed slot with the requested lifecycle state.
+ * @param[in] slot              Slot to build.
+ * @param[in] sequence          ACTIVATED sequence value.
+ * @param[in] state             Lifecycle records to write.
+ * @param[in] security_counter  Anti-rollback counter for the header.
+ */
 static void make_slot_counter(boot_slot_t slot, uint32_t sequence,
                               enum slot_state state,
                               uint32_t security_counter)
@@ -109,13 +120,14 @@ static void make_slot_counter(boot_slot_t slot, uint32_t sequence,
     }
 }
 
+/** @brief make_slot_counter() with security counter 0. */
 static void make_slot(boot_slot_t slot, uint32_t sequence,
                       enum slot_state state)
 {
     make_slot_counter(slot, sequence, state, 0U);
 }
 
-/* The header boot_update_begin() rebuilds from a descriptor. */
+/** @brief Build the header boot_update_begin() reconstructs from a desc. */
 static boot_image_header_t desc_header(const boot_image_desc_t *desc)
 {
     boot_image_header_t header;
@@ -132,7 +144,7 @@ static boot_image_header_t desc_header(const boot_image_desc_t *desc)
     return header;
 }
 
-/* Sign a descriptor for body and attach the protocol minor 3 extension. */
+/** @brief Sign a descriptor for @p body and attach the minor-3 extension. */
 static void sign_desc(boot_image_desc_t *desc, const uint8_t *body,
                       uint32_t body_len, uint32_t security_counter)
 {
@@ -146,6 +158,7 @@ static void sign_desc(boot_image_desc_t *desc, const uint8_t *body,
     desc->header_crc32_present = true;
 }
 
+/** @brief Build a signed descriptor for the standard test body. */
 static boot_image_desc_t make_desc(void)
 {
     boot_image_desc_t desc;
@@ -170,6 +183,7 @@ static boot_image_desc_t make_desc(void)
     return desc;
 }
 
+/** @brief Test record read/write, torn records and trial counting. */
 static void test_metadata_records(void)
 {
     fake_flash_reset();
@@ -210,6 +224,7 @@ static void test_metadata_records(void)
     CHECK(boot_meta_trial_count(BOOT_SLOT_A) == 2U);
 }
 
+/** @brief Test trial-limit rejection in flash and the P0-2 RAM fallback. */
 static void test_trial_limit_and_ram_rejection(void)
 {
     fake_flash_reset();
@@ -274,6 +289,7 @@ static void test_trial_limit_and_ram_rejection(void)
           BOOT_REJECT_TRIAL_LIMIT);
 }
 
+/** @brief Test the P0-1 update-during-trial guard and its force override. */
 static void test_update_during_trial(void)
 {
     fake_flash_reset();
@@ -311,6 +327,7 @@ static void test_update_during_trial(void)
                                sizeof(detail)) == BOOT_ERR_BAD_STATE);
 }
 
+/** @brief Test that activation sequences saturate at 0xFFFFFFFE. */
 static void test_sequence_saturation(void)
 {
     fake_flash_reset();
@@ -341,6 +358,7 @@ static void test_sequence_saturation(void)
     CHECK(sequence == 0xFFFFFFFEU);
 }
 
+/** @brief Test one-shot and streaming SHA-256 against known vectors. */
 static void test_sha256_vectors(void)
 {
     for (size_t i = 0U; i < test_sha_vector_count; i++) {
@@ -362,12 +380,14 @@ static void test_sha256_vectors(void)
     }
 }
 
+/** @brief Recompute the header CRC after mutating a header. */
 static void refresh_crc(boot_image_header_t *header)
 {
     header->header_crc32 =
         boot_crc32(header, offsetof(boot_image_header_t, header_crc32));
 }
 
+/** @brief Test mkimage.py signatures and every rejection path. */
 static void test_header_signature(void)
 {
     boot_image_header_t header;
@@ -410,6 +430,11 @@ static void test_header_signature(void)
     CHECK(boot_image_header_check(&bad) == BOOT_HEADER_BAD_FORMAT);
 }
 
+/**
+ * @brief Test update authentication and the anti-rollback floor.
+ * @details Unsigned, forged and below-floor descriptors must be refused
+ *          before the target slot is erased; an equal counter is accepted.
+ */
 static void test_update_authentication(void)
 {
     fake_flash_reset();
@@ -494,9 +519,11 @@ static void test_update_authentication(void)
     CHECK(strcmp(detail, "image SHA-256 mismatch") == 0);
 }
 
-/* Regression: the lazy erase compared slot-relative image offsets with
- * bank-relative sector offsets, so a slot that already held data kept its
- * first 48 KB and lost sector 0 again once the update passed 0xC000. */
+/**
+ * @brief Regression test for lazy sector erase on a previously used slot.
+ * @details The old code compared slot-relative image offsets with
+ *          bank-relative sector offsets, leaving old data below 0xC000.
+ */
 static void test_update_over_used_slot(void)
 {
     static uint8_t image[100U * 1024U];
@@ -546,6 +573,7 @@ static void test_update_over_used_slot(void)
           0);
 }
 
+/** @brief Test that digest-invalid and unsigned slots are not booted. */
 static void test_boot_authentication(void)
 {
     fake_flash_reset();
@@ -604,6 +632,7 @@ static void test_boot_authentication(void)
     CHECK(!selection.active_valid);
 }
 
+/** @brief Test the anti-rollback floor derived from confirmed slots. */
 static void test_security_floor(void)
 {
     boot_selection_t selection;
@@ -661,6 +690,7 @@ static void test_security_floor(void)
     CHECK(selection.active == BOOT_SLOT_A);
 }
 
+/** @brief Run every host test and report the failure count. */
 int main(void)
 {
     test_sha256_vectors();

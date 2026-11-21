@@ -1,32 +1,40 @@
-/*
- * flatcc_port.c - fixed-arena allocator for the flatcc runtime
- *
- * Author:  Sandesh Ghimire <sandesh@soccentric.com>
- * Date:    2026-11-03
- * Target:  STM32F767ZIT6
- * SRS:     BCON-002 (flatcc runtime), BCON-003 (no malloc)
- *
- * A small first-fit allocator with 16-byte blocks.  It is used only by the
- * HWLINK service (builder/verifier), so no lock is needed.  The arena is part
- * of .bss; malloc/free are never linked.
+/**
+ * @file    flatcc_port.c
+ * @brief   Fixed-arena allocator for the flatcc runtime.
+ * @details A small first-fit allocator with 16-byte blocks.  It is used only
+ *          by the HWLINK service (builder/verifier), so no lock is needed.
+ *          The arena is part of .bss; malloc/free are never linked.
+ * @author  Sandesh Ghimire <sandesh@soccentric.com>
+ * @date    2026-11-03
+ * @target  STM32F767ZIT6
+ * @srs     BCON-002 (flatcc runtime), BCON-003 (no malloc)
  */
 
 #include <string.h>
 #include "flatcc_port.h"
 
+/** @brief Arena size in bytes; override with BOOT_FLATCC_HEAP_SIZE. */
 #ifndef BOOT_FLATCC_HEAP_SIZE
 #define BOOT_FLATCC_HEAP_SIZE (16U * 1024U)
 #endif
 
+/** Alignment of every returned block and of the arena itself. */
 #define FLATCC_ALIGNMENT 16U
 
+/**
+ * @brief Arena block header, kept 16-byte aligned.
+ */
 typedef struct flatcc_block {
-    size_t size;                 /* payload size */
-    struct flatcc_block *next;
-    uint32_t free;
-    uint32_t pad;
+    size_t size;                 /**< Payload size in bytes. */
+    struct flatcc_block *next;   /**< Next block, or NULL at the end. */
+    uint32_t free;               /**< Non-zero when the block is available. */
+    uint32_t pad;                /**< Keeps the payload 16-byte aligned. */
 } __attribute__((aligned(FLATCC_ALIGNMENT))) flatcc_block_t;
 
+/**
+ * @brief Backing storage for the arena.
+ * @details The union forces both 16-byte alignment and the full size.
+ */
 typedef union {
     long double align;
     void *pointer;
@@ -34,13 +42,24 @@ typedef union {
 } __attribute__((aligned(FLATCC_ALIGNMENT))) flatcc_arena_t;
 
 static flatcc_arena_t flatcc_arena;
+
+/** Head of the block list; NULL until the first allocation. */
 static flatcc_block_t *flatcc_head;
 
+/**
+ * @brief   Round a size up to the arena alignment.
+ * @param[in] n  Size in bytes.
+ * @return @p n rounded up to FLATCC_ALIGNMENT.
+ */
 static size_t flatcc_align(size_t n)
 {
     return (n + (FLATCC_ALIGNMENT - 1U)) & ~(size_t)(FLATCC_ALIGNMENT - 1U);
 }
 
+/**
+ * @brief   Create the initial free block covering the whole arena.
+ * @details Runs once, on the first allocation.
+ */
 static void flatcc_heap_init(void)
 {
     if (flatcc_head == NULL) {
@@ -51,6 +70,7 @@ static void flatcc_heap_init(void)
     }
 }
 
+/** @brief Allocate a block; see @ref boot_flatcc_alloc. */
 void *boot_flatcc_alloc(size_t size)
 {
     flatcc_heap_init();
@@ -82,6 +102,7 @@ void *boot_flatcc_alloc(size_t size)
     return NULL;
 }
 
+/** @brief Release a block; see @ref boot_flatcc_free. */
 void boot_flatcc_free(void *ptr)
 {
     if (ptr == NULL) {
@@ -108,6 +129,7 @@ void boot_flatcc_free(void *ptr)
     }
 }
 
+/** @brief Resize a block; see @ref boot_flatcc_realloc. */
 void *boot_flatcc_realloc(void *ptr, size_t size)
 {
     if (ptr == NULL) {
@@ -133,6 +155,7 @@ void *boot_flatcc_realloc(void *ptr, size_t size)
     return new_ptr;
 }
 
+/** @brief Allocate a zeroed array; see @ref boot_flatcc_calloc. */
 void *boot_flatcc_calloc(size_t count, size_t size)
 {
     if (count != 0U && size > (SIZE_MAX / count)) {
@@ -146,12 +169,14 @@ void *boot_flatcc_calloc(size_t count, size_t size)
     return ptr;
 }
 
+/** @brief Aligned allocation; see @ref boot_flatcc_aligned_alloc. */
 void *boot_flatcc_aligned_alloc(size_t alignment, size_t size)
 {
     (void)alignment;   /* the arena always returns 16-byte aligned blocks */
     return boot_flatcc_alloc(size);
 }
 
+/** @brief Release an aligned block; see @ref boot_flatcc_aligned_free. */
 void boot_flatcc_aligned_free(void *ptr)
 {
     boot_flatcc_free(ptr);

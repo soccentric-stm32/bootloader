@@ -59,6 +59,7 @@ static volatile uint32_t *bkp(uint32_t index)
     return &((volatile uint32_t *)&RTC->BKP0R)[index];
 }
 
+/** @brief Enable RTC backup-register access; see selection.h. */
 void boot_selection_init(void)
 {
     __HAL_RCC_PWR_CLK_ENABLE();
@@ -85,6 +86,7 @@ static bool metadata_ok(const boot_slot_info_t *info)
            !info->rejected && !info->below_floor;
 }
 
+/** @brief Highest confirmed security counter; see selection.h. */
 uint32_t boot_selection_security_floor(const boot_selection_t *selection)
 {
     uint32_t floor = 0U;

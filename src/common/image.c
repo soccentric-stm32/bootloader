@@ -37,6 +37,7 @@ static bool signature_valid(const boot_image_header_t *header)
 }
 #endif
 
+/** @brief Check a header and return the first failure; see image.h. */
 boot_header_status_t boot_image_header_check(
     const boot_image_header_t *header)
 {
@@ -72,11 +73,13 @@ boot_header_status_t boot_image_header_check(
     return BOOT_HEADER_OK;
 }
 
+/** @brief Boolean form of boot_image_header_check(); see image.h. */
 bool boot_image_header_valid(const boot_image_header_t *header)
 {
     return boot_image_header_check(header) == BOOT_HEADER_OK;
 }
 
+/** @brief Check the slot's initial SP and reset vector; see image.h. */
 bool boot_image_vectors_valid(boot_slot_t slot)
 {
     const volatile uint32_t *vec =
@@ -93,6 +96,7 @@ bool boot_image_vectors_valid(boot_slot_t slot)
     return sp_ok && entry_ok;
 }
 
+/** @brief Compare the slot CRC with the header; see image.h. */
 bool boot_image_crc_matches(boot_slot_t slot,
                             const boot_image_header_t *header)
 {
@@ -104,6 +108,7 @@ bool boot_image_crc_matches(boot_slot_t slot,
     return crc == header->image_crc32;
 }
 
+/** @brief Compare the slot SHA-256 with the header; see image.h. */
 bool boot_image_digest_matches(boot_slot_t slot,
                                const boot_image_header_t *header)
 {
@@ -123,6 +128,7 @@ bool boot_image_digest_matches(boot_slot_t slot,
 #endif
 }
 
+/** @brief Run every image check; see image.h. */
 bool boot_image_valid(boot_slot_t slot, const boot_image_header_t *header)
 {
     return boot_image_header_valid(header) &&
@@ -131,6 +137,7 @@ bool boot_image_valid(boot_slot_t slot, const boot_image_header_t *header)
            boot_image_digest_matches(slot, header);
 }
 
+/** @brief Fill the constant header fields and CRC; see image.h. */
 void boot_image_header_finalize(boot_image_header_t *header)
 {
     if (header == NULL) {

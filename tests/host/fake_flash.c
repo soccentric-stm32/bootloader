@@ -1,9 +1,12 @@
-/*
- * fake_flash.c - in-memory 2 MB dual-bank flash for the host tests
- *
- * The mapping and the address guards mirror src/bsp/flash.c, without the
- * STM32 controller.  Tests can inject raw bytes (torn records, bad images)
- * through fake_flash_write_raw().
+/**
+ * @file    fake_flash.c
+ * @brief   In-memory 2 MB dual-bank flash for the host tests.
+ * @details The mapping and address guards mirror src/bsp/flash.c, without
+ *          the STM32 controller.  Tests can inject raw bytes (torn records,
+ *          bad images) through fake_flash_write_raw().
+ * @author  Sandesh Ghimire <sandesh@soccentric.com>
+ * @date    2026-11-03
+ * @target  Host tests
  */
 
 #include <stdio.h>
@@ -23,6 +26,8 @@
 /* The boot modules address flash through the absolute STM32 addresses, so
  * the host test maps the two banks at 0x08000000.  This keeps the real
  * pointer arithmetic and CRC ranges under test. */
+
+/** Host mapping of the fake flash, or NULL before the first reset. */
 static uint8_t *memory;
 
 #ifndef _WIN32
@@ -31,6 +36,7 @@ static uint8_t *memory;
 #endif
 #endif
 
+/** @brief Map the two flash banks at their STM32 addresses, once. */
 static void map_memory(void)
 {
     if (memory != NULL) {
@@ -57,12 +63,15 @@ static void map_memory(void)
     memory = (uint8_t *)mapped;
 }
 
-static boot_slot_t g_active = BOOT_SLOT_A;
-static bool g_active_valid;
-static bool g_allowed = true;
-static bool g_fail_meta;
-static uint32_t g_fail_meta_offset;
+/** @name Flash-driver state mirrored by the fake controller. @{ */
+static boot_slot_t g_active = BOOT_SLOT_A;  /**< Active slot. */
+static bool g_active_valid;                 /**< Active slot is bootable. */
+static bool g_allowed = true;               /**< Erase/program gate. */
+static bool g_fail_meta;                    /**< Injected metadata failure. */
+static uint32_t g_fail_meta_offset;         /**< Offset that fails. */
+/** @} */
 
+/** @brief Reset the fake flash; see fake_flash.h. */
 void fake_flash_reset(void)
 {
     map_memory();
@@ -74,6 +83,7 @@ void fake_flash_reset(void)
     g_fail_meta_offset = 0U;
 }
 
+/** @brief Translate an address to host memory; see fake_flash.h. */
 uint8_t *fake_flash_ptr(uint32_t address)
 {
     map_memory();
@@ -84,6 +94,7 @@ uint8_t *fake_flash_ptr(uint32_t address)
     return &memory[address - BOOT_BANK1_BASE];
 }
 
+/** @brief Write raw bytes; see fake_flash.h. */
 void fake_flash_write_raw(uint32_t address, const void *data, uint32_t len)
 {
     uint8_t *dst = fake_flash_ptr(address);
@@ -92,28 +103,33 @@ void fake_flash_write_raw(uint32_t address, const void *data, uint32_t len)
     }
 }
 
+/** @brief Inject a metadata programming failure; see fake_flash.h. */
 void fake_flash_fail_meta_offset(uint32_t offset, bool fail)
 {
     g_fail_meta = fail;
     g_fail_meta_offset = offset;
 }
 
+/** @brief Set the erase/program gate; mirrors flash.h. */
 void boot_flash_set_allowed(bool allowed)
 {
     g_allowed = allowed;
 }
 
+/** @brief Publish the active slot; mirrors flash.h. */
 void boot_flash_set_active(boot_slot_t slot, bool valid)
 {
     g_active = slot;
     g_active_valid = valid;
 }
 
+/** @brief Return the update target; mirrors flash.h. */
 boot_slot_t boot_flash_target_slot(void)
 {
     return g_active_valid ? boot_other_slot(g_active) : BOOT_SLOT_A;
 }
 
+/** @brief Test a range for 0xFF; mirrors flash.h. */
 bool boot_flash_range_erased(uint32_t address, uint32_t len)
 {
     const uint8_t *src = fake_flash_ptr(address);
@@ -128,6 +144,7 @@ bool boot_flash_range_erased(uint32_t address, uint32_t len)
     return true;
 }
 
+/** @brief Erase a metadata sector; mirrors flash.h. */
 bool boot_flash_erase_meta(boot_slot_t slot)
 {
     if (!g_allowed || slot != boot_flash_target_slot()) {
@@ -141,6 +158,7 @@ bool boot_flash_erase_meta(boot_slot_t slot)
     return true;
 }
 
+/** @brief Erase one slot sector; mirrors flash.h. */
 bool boot_flash_erase_slot_sector(boot_slot_t slot, uint32_t index)
 {
     if (!g_allowed || slot != boot_flash_target_slot() ||
@@ -158,6 +176,13 @@ bool boot_flash_erase_slot_sector(boot_slot_t slot, uint32_t index)
     return true;
 }
 
+/**
+ * @brief   Mirror the metadata write guard of the real flash driver.
+ * @param[in] slot    Slot to write.
+ * @param[in] offset  Metadata-sector offset.
+ * @param[in] len     Length in bytes.
+ * @return true when the write would be allowed.
+ */
 static bool meta_allowed(boot_slot_t slot, uint32_t offset, uint32_t len)
 {
     if (offset >= BOOT_META_SIZE || len > BOOT_META_SIZE - offset) {
@@ -185,6 +210,7 @@ static bool meta_allowed(boot_slot_t slot, uint32_t offset, uint32_t len)
            offset == BOOT_META_REJECTED_OFFSET || trial;
 }
 
+/** @brief Program metadata; mirrors flash.h. */
 bool boot_flash_program_meta(boot_slot_t slot, uint32_t offset,
                              const void *data, uint32_t len)
 {
@@ -203,6 +229,7 @@ bool boot_flash_program_meta(boot_slot_t slot, uint32_t offset,
     return true;
 }
 
+/** @brief Program slot words; mirrors flash.h. */
 bool boot_flash_program_slot(boot_slot_t slot, uint32_t offset,
                              const void *data, uint32_t len,
                              uint32_t *fail_addr)

@@ -1,15 +1,19 @@
-/*
- * fake_crc32.c - software CRC-32/ISO-HDLC for the host tests
- *
- * The production implementation uses the STM32 CRC peripheral.  This one is
- * the same reflected 0xEDB88320 algorithm as zlib and keeps the metadata and
- * image checks identical on the host.
+/**
+ * @file    fake_crc32.c
+ * @brief   Software CRC-32/ISO-HDLC for the host tests.
+ * @details The production implementation uses the STM32 CRC peripheral.
+ *          This one is the same reflected 0xEDB88320 algorithm as zlib and
+ *          keeps the metadata and image checks identical on the host.
+ * @author  Sandesh Ghimire <sandesh@soccentric.com>
+ * @date    2026-11-03
+ * @target  Host tests
  */
 
 #include <stddef.h>
 #include <stdint.h>
 #include "crc32.h"
 
+/** @brief Compute zlib-compatible CRC-32; see crc32.h. */
 uint32_t boot_crc32(const void *data, size_t len)
 {
     const uint8_t *p = (const uint8_t *)data;

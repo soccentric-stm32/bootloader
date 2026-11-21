@@ -1,14 +1,13 @@
-/*
- * proto.c - HWLINK bootloader message service (section 9)
- *
- * Author:  Sandesh Ghimire <sandesh@soccentric.com>
- * Date:    2026-11-03
- * Target:  STM32F767ZIT6
- * SRS:     BGEN-002, ENT-001/005, UPD-001..UPD-010, TRY-008, section 9
- *
- * One static flatcc builder and static frame buffers; no dynamic memory.
- * Repeated request sequence numbers resend the previous response without
- * executing the request again ([LINK] LNK-008).
+/**
+ * @file    proto.c
+ * @brief   HWLINK bootloader message service (section 9).
+ * @details One static flatcc builder and static frame buffers; no dynamic
+ *          memory.  Repeated request sequence numbers resend the previous
+ *          response without executing the request again (LNK-008).
+ * @author  Sandesh Ghimire <sandesh@soccentric.com>
+ * @date    2026-11-03
+ * @target  STM32F767ZIT6
+ * @srs     BGEN-002, ENT-001/005, UPD-001..UPD-010, TRY-008, section 9
  */
 
 #include <string.h>
@@ -39,37 +38,68 @@
 #define BOOT_BUILD_DATE "unknown"
 #endif
 
-
-
+/** Static flatcc builder for every outgoing message. */
 static flatcc_builder_t builder;
 
+/**
+ * @name Parser and transmit buffers
+ * @brief Static, 8-byte aligned storage for one request/response at a time.
+ * @details `rx_enc` holds the encoded request, `rx_raw` the decoded frame,
+ *          `rx_payload` the decoded payload and `build_payload` the
+ *          FlatBuffer under construction.  `raw_tx`/`tx_frame` hold the
+ *          response and `last_response` caches it for LNK-008 replay.
+ * @{
+ */
+/* Encoded bytes of the frame currently being received. */
 static uint8_t rx_enc[HWLINK_MAX_ENCODED] __attribute__((aligned(8)));
+/** Bytes accumulated in rx_enc. */
 static size_t rx_enc_len;
+/** Set when rx_enc is full; the rest of the frame is dropped. */
 static bool rx_enc_overflow;
 
+/* COBS-decoded raw frame. */
 static uint8_t rx_raw[HWLINK_MAX_FRAME] __attribute__((aligned(8)));
+/* Payload extracted from rx_raw. */
 static uint8_t rx_payload[HWLINK_MAX_FRAME] __attribute__((aligned(8)));
+/* FlatBuffer built for the current response. */
 static uint8_t build_payload[HWLINK_MAX_FRAME] __attribute__((aligned(8)));
+/* Raw response frame before COBS encoding. */
 static uint8_t raw_tx[HWLINK_MAX_FRAME] __attribute__((aligned(8)));
+/* COBS-encoded response frame. */
 static uint8_t tx_frame[HWLINK_MAX_ENCODED] __attribute__((aligned(8)));
 
+/* Last response, kept for LNK-008 sequence-number replay. */
 static uint8_t last_response[HWLINK_MAX_FRAME] __attribute__((aligned(8)));
+/** Length of last_response; 0 when no response is cached. */
 static size_t last_response_len;
+/** Sequence number that produced last_response. */
 static uint16_t last_request_seq;
+/** True when last_request_seq and last_response are valid. */
 static bool last_request_valid;
 
+/** Selection context installed by boot_proto_init(). */
 static boot_selection_t *g_selection;
+/** Update context installed by boot_proto_init(). */
 static boot_update_t *g_update;
+/** Set when a Hello is received. */
 static bool hello_seen;
+/** HAL tick of the last valid request; drives the idle timeout. */
 static uint32_t last_activity_ms;
 
-/* P2-7: a GetBootInfo scan is expensive (two 976 KB CRC runs).  Inside an
- * update session the metadata only changes at UpdateBegin/UpdateEnd/
- * UpdateAbort, so cache the scanned slot details and invalidate at those
- * points. */
+/** @} */
+
+/**
+ * @brief   Cached GetBootInfo scan (P2-7).
+ * @details Inside an update session the metadata only changes at
+ *          UpdateBegin/UpdateEnd/UpdateAbort, so the scan is reused and
+ *          invalidated at those points instead of running two 976 KB CRC
+ *          passes on every request.
+ */
 static boot_selection_t boot_info_cache;
+/** True when @ref boot_info_cache can be used instead of a fresh scan. */
 static bool boot_info_cache_valid;
 
+/** @brief Drop the cached GetBootInfo scan. */
 static void boot_info_cache_invalidate(void)
 {
     boot_info_cache_valid = false;
@@ -77,6 +107,15 @@ static void boot_info_cache_invalidate(void)
 
 static uint32_t tx_timeout_ms(uint16_t len);
 
+/**
+ * @brief   Build, encode and send one message payload.
+ * @param[in] payload      FlatBuffer payload.
+ * @param[in] payload_len  Payload length in bytes.
+ * @param[in] flags        HWLINK_FLAG_* bits.
+ * @param[in] seq          Request sequence number.
+ * @param[in] store        Cache the raw frame for LNK-008 replay.
+ * @return true when the frame was sent.
+ */
 static bool send_payload(const uint8_t *payload, size_t payload_len,
                          uint8_t flags, uint16_t seq, bool store)
 {
@@ -99,6 +138,14 @@ static bool send_payload(const uint8_t *payload, size_t payload_len,
                            tx_timeout_ms((uint16_t)encoded_len));
 }
 
+/**
+ * @brief   Serialise a flatcc body and send it as a Message.
+ * @param[in] body   Message body union.
+ * @param[in] seq    Request sequence number.
+ * @param[in] flags  HWLINK_FLAG_* bits.
+ * @param[in] store  Cache the response for replay.
+ * @return true when the frame was sent.
+ */
 static bool send_body(hwlink_Body_union_ref_t body, uint16_t seq,
                       uint8_t flags, bool store)
 {
@@ -119,6 +166,7 @@ static bool send_body(hwlink_Body_union_ref_t body, uint16_t seq,
     return send_payload(build_payload, size, flags, seq, store);
 }
 
+/** @brief Send an Ack carrying @p next_offset. */
 static bool send_ack_offset(uint16_t seq, uint32_t next_offset)
 {
     flatcc_builder_reset(&builder);
@@ -127,11 +175,20 @@ static bool send_ack_offset(uint16_t seq, uint32_t next_offset)
            send_body(hwlink_Body_as_Ack(ack), seq, HWLINK_FLAG_RESPONSE, true);
 }
 
+/** @brief Send a plain Ack. */
 static bool send_ack(uint16_t seq)
 {
     return send_ack_offset(seq, 0U);
 }
 
+/**
+ * @brief Send a Nak with an error code, detail text and next offset.
+ * @param[in] seq              Request sequence number.
+ * @param[in] error            Wire error code.
+ * @param[in] detail           Optional detail string.
+ * @param[in] expected_offset  Offset the host should resend from.
+ * @return true when the frame was sent.
+ */
 static bool send_nak(uint16_t seq, hwlink_Error_enum_t error,
                      const char *detail, uint32_t expected_offset)
 {
@@ -144,6 +201,7 @@ static bool send_nak(uint16_t seq, hwlink_Error_enum_t error,
            send_body(hwlink_Body_as_Nak(nak), seq, HWLINK_FLAG_RESPONSE, true);
 }
 
+/** @brief Send a Pong with the current HAL tick. */
 static bool send_pong(uint16_t seq)
 {
     flatcc_builder_reset(&builder);
@@ -154,8 +212,13 @@ static bool send_pong(uint16_t seq)
                      true);
 }
 
-/* A full frame at 115200 takes about 180 ms; derive the timeout from the
- * encoded length and the current baud rate instead of a fixed 200 ms. */
+/**
+ * @brief   Derive a transmit timeout from frame length and baud rate.
+ * @details A full frame at 115200 baud takes about 180 ms, so a fixed
+ *          timeout would be wrong at 921600 baud.
+ * @param[in] len  Encoded frame length in bytes.
+ * @return Timeout in ms, including a 50 ms margin.
+ */
 static uint32_t tx_timeout_ms(uint16_t len)
 {
     uint32_t baud = boot_uart3_baud();
@@ -166,6 +229,7 @@ static uint32_t tx_timeout_ms(uint16_t len)
     return ms + 50U;
 }
 
+/** @brief Read the dual/single-bank mode from the option bytes. */
 static hwlink_FlashMode_enum_t flash_mode(void)
 {
     return (FLASH->OPTCR & FLASH_OPTCR_nDBANK) != 0U
@@ -173,6 +237,7 @@ static hwlink_FlashMode_enum_t flash_mode(void)
                : hwlink_FlashMode_DUAL_BANK;
 }
 
+/** @brief Build and send HelloReply, including the WRONG_FLASH_MODE hint. */
 static bool send_hello_reply(uint16_t seq)
 {
     flatcc_builder_reset(&builder);
@@ -207,6 +272,7 @@ static bool send_hello_reply(uint16_t seq)
                      HWLINK_FLAG_RESPONSE, true);
 }
 
+/** @brief Send an UpdateResult with success flag, CRC and error code. */
 static bool send_update_result(uint16_t seq, bool success, uint32_t crc,
                                hwlink_Error_enum_t error, const char *detail)
 {
@@ -221,6 +287,7 @@ static bool send_update_result(uint16_t seq, bool success, uint32_t crc,
                      HWLINK_FLAG_RESPONSE, true);
 }
 
+/** @brief Send an unsolicited Progress event. */
 static bool send_progress(const char *operation, uint32_t done,
                           uint32_t total)
 {
@@ -236,12 +303,18 @@ static bool send_progress(const char *operation, uint32_t done,
                      HWLINK_FLAG_EVENT, false);
 }
 
+/** @brief Update-module progress callback; forwards to send_progress(). */
 static void proto_progress(const char *operation, uint32_t done,
                            uint32_t total)
 {
     (void)send_progress(operation, done, total);
 }
 
+/**
+ * @brief   Render a 20-byte git commit as 40 lower-case hex characters.
+ * @param[in]  commit  Commit bytes.
+ * @param[out] out     41-byte buffer; NUL-terminated on return.
+ */
 static void commit_to_hex(const uint8_t commit[20], char out[41])
 {
     static const char hex[] = "0123456789abcdef";
@@ -252,6 +325,7 @@ static void commit_to_hex(const uint8_t commit[20], char out[41])
     out[40] = '\0';
 }
 
+/** @brief Return the short human-readable status of a slot. */
 static const char *slot_detail(const boot_slot_info_t *info)
 {
     if (!info->header_present) {
@@ -301,6 +375,7 @@ static const char *slot_detail(const boot_slot_info_t *info)
     return "pending";
 }
 
+/** @brief Build and send the full GetBootInfo response. */
 static bool send_boot_info(uint16_t seq)
 {
     /* P0-2/P2-7: refresh slot details without changing the active/target
@@ -459,6 +534,7 @@ static bool send_boot_info(uint16_t seq)
                      HWLINK_FLAG_RESPONSE, true);
 }
 
+/** @brief Handle an UpdateBegin request and reply with Ack or Nak. */
 static void handle_update_begin(uint16_t seq,
                                 hwlink_UpdateBegin_table_t begin)
 {
@@ -533,6 +609,7 @@ static void handle_update_begin(uint16_t seq,
     }
 }
 
+/** @brief Handle an UpdateData chunk and reply with Ack or Nak. */
 static void handle_update_data(uint16_t seq, hwlink_UpdateData_table_t data)
 {
     if (data == 0) {
@@ -559,6 +636,7 @@ static void handle_update_data(uint16_t seq, hwlink_UpdateData_table_t data)
     }
 }
 
+/** @brief Handle UpdateEnd and reply with UpdateResult. */
 static void handle_update_end(uint16_t seq)
 {
     char detail[64];
@@ -575,6 +653,7 @@ static void handle_update_end(uint16_t seq)
     }
 }
 
+/** @brief Handle Activate, acknowledge and reset the board. */
 static void handle_activate(uint16_t seq)
 {
     char detail[64];
@@ -594,6 +673,7 @@ static void handle_activate(uint16_t seq)
     }
 }
 
+/** @brief Handle SetBaud: acknowledge, then switch the UART rate. */
 static void handle_set_baud(uint16_t seq, hwlink_SetBaud_table_t set)
 {
     uint32_t rate = hwlink_SetBaud_rate(set);
@@ -613,6 +693,12 @@ static void handle_set_baud(uint16_t seq, hwlink_SetBaud_table_t set)
     last_activity_ms = HAL_GetTick();
 }
 
+/**
+ * @brief   Verify, decode and dispatch one request payload.
+ * @param[in] seq      Request sequence number.
+ * @param[in] payload  FlatBuffer payload.
+ * @param[in] len      Payload length in bytes.
+ */
 static void handle_payload(uint16_t seq, const uint8_t *payload, size_t len)
 {
     if (hwlink_Message_verify_as_root(payload, len) != flatcc_verify_ok) {
@@ -694,12 +780,18 @@ static void handle_payload(uint16_t seq, const uint8_t *payload, size_t len)
     }
 }
 
+/** @brief Drop any partially received frame. */
 static void reset_parser(void)
 {
     rx_enc_len = 0U;
     rx_enc_overflow = false;
 }
 
+/**
+ * @brief   Validate a raw frame, handle replay, then dispatch it.
+ * @param[in] raw      Raw frame bytes.
+ * @param[in] raw_len  Raw frame length.
+ */
 static void handle_raw(const uint8_t *raw, size_t raw_len)
 {
     size_t payload_len = 0U;
@@ -747,6 +839,10 @@ static void handle_raw(const uint8_t *raw, size_t raw_len)
     handle_payload(seq, rx_payload, payload_len);
 }
 
+/**
+ * @brief   Consume one encoded byte, completing a frame on the 0x00 delimiter.
+ * @param[in] byte  Encoded byte.
+ */
 static void feed_byte(uint8_t byte)
 {
     if (byte == 0U) {
@@ -765,6 +861,7 @@ static void feed_byte(uint8_t byte)
     }
 }
 
+/** @brief Poll the UART ring; see @ref boot_proto_poll. */
 void boot_proto_poll(void)
 {
     uint8_t chunk[64];
@@ -780,6 +877,7 @@ void boot_proto_poll(void)
     }
 }
 
+/** @brief Install contexts; see @ref boot_proto_init. */
 void boot_proto_init(boot_selection_t *selection, boot_update_t *update)
 {
     g_selection = selection;
@@ -796,6 +894,7 @@ void boot_proto_init(boot_selection_t *selection, boot_update_t *update)
     boot_update_set_progress_cb(proto_progress);
 }
 
+/** @brief Listen for a Hello; see @ref boot_proto_listen_for_hello. */
 bool boot_proto_listen_for_hello(uint32_t window_ms)
 {
     uint32_t start = HAL_GetTick();
@@ -815,6 +914,7 @@ bool boot_proto_listen_for_hello(uint32_t window_ms)
     return hello_seen;
 }
 
+/** @brief Serve requests; see @ref boot_proto_run. */
 void boot_proto_run(bool can_boot)
 {
     uint32_t last_toggle = HAL_GetTick();

@@ -82,11 +82,13 @@ static void detail_flash_error(char *detail, size_t cap, uint32_t address)
     detail_set(detail, cap, buffer);
 }
 
+/** @brief Return the update context to idle; see update.h. */
 void boot_update_reset(boot_update_t *update)
 {
     memset(update, 0, sizeof(*update));
 }
 
+/** @brief Install the progress callback; see update.h. */
 void boot_update_set_progress_cb(boot_progress_fn callback)
 {
     progress_cb = callback;

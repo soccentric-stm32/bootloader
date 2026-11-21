@@ -1,9 +1,12 @@
-/*
- * fake_hal/stm32f7xx_hal.h - host-test replacement for the STM32 HAL
- *
- * Only the symbols used by src/app/selection.c and the metadata/update
- * modules are provided.  The fake flash and RTC backup registers live in
- * fake_flash.c and fake_hal.c.
+/**
+ * @file    stm32f7xx_hal.h
+ * @brief   Host-test replacement for the STM32 HAL.
+ * @details Only the symbols used by src/app/selection.c and the
+ *          metadata/update modules are provided.  The fake flash and RTC
+ *          backup registers live in fake_flash.c and fake_hal.c.
+ * @author  Sandesh Ghimire <sandesh@soccentric.com>
+ * @date    2026-11-03
+ * @target  Host tests
  */
 
 #ifndef STM32F7XX_HAL_H
@@ -11,6 +14,7 @@
 
 #include <stdint.h>
 
+/** Minimal RTC register block: only the backup registers are used. */
 typedef struct {
     volatile uint32_t BKP0R;
     volatile uint32_t BKP1R;
@@ -34,13 +38,20 @@ typedef struct {
     volatile uint32_t BKP19R;
 } RTC_TypeDef;
 
+/** RTC peripheral instance backed by fake_hal.c. */
 extern RTC_TypeDef *RTC;
 
+/** @brief Return the fake millisecond tick (always 0). */
 uint32_t HAL_GetTick(void);
+
+/** @name No-op clock and barrier macros
+ * @{
+ */
 
 #define __HAL_RCC_PWR_CLK_ENABLE() do { } while (0)
 #define __HAL_RCC_RTC_CLK_ENABLE() do { } while (0)
 #define HAL_PWR_EnableBkUpAccess() do { } while (0)
 #define __DSB() do { } while (0)
+/** @} */
 
 #endif /* STM32F7XX_HAL_H */
