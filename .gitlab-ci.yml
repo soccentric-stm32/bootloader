@@ -1,0 +1,107 @@
+# .gitlab-ci.yml - GitLab CI for the STM32 A/B bootloader.
+#
+# Mirrors ./Jenkinsfile: Checkout -> Toolchain -> Build -> Host/Python tests -> Static analysis
+# -> Layout contract -> Image tool -> Package -> Release (tags).
+#
+# Builds run through scripts/docker-dev.sh, so the runner only needs
+# Docker (DinD) and make. The image is built from docker/Dockerfile on
+# first use and then reused by the runner's Docker cache.
+#
+# Set the CI/CD variable GITHUB_RELEASE_TOKEN (masked, protected) to
+# publish a v<version> tag build as a GitHub release.
+
+stages:
+  - build
+  - test
+  - analyse
+  - package
+  - release
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
+      when: never
+    - if: '$CI_COMMIT_BRANCH || $CI_COMMIT_TAG'
+
+variables:
+  GIT_DEPTH: "0"
+  BUILD_TYPE: "Release"
+  STM32_IMAGE: "stm32-dev:latest"
+  DOCKER_HOST: "tcp://docker:2375"
+  DOCKER_TLS_CERTDIR: ""
+
+default:
+  image: docker:27
+  services:
+    - name: docker:27-dind
+      alias: docker
+  interruptible: true
+  before_script:
+    - apk add --no-cache bash build-base git make python3 py3-pip
+    - docker version
+    - |
+      if ! docker image inspect "$STM32_IMAGE" >/dev/null 2>&1; then
+        echo "Building $STM32_IMAGE"
+        make image
+      fi
+
+build:
+  stage: build
+  script:
+    - |
+      make build BUILD_TYPE="$BUILD_TYPE"
+  artifacts:
+    paths:
+      - build/
+    expire_in: 30 days
+
+test:
+  stage: test
+  needs: [build]
+  script:
+    - |
+      make test-host
+    - |
+      python3 -m venv .venv
+    - |
+      .venv/bin/python -m pip install --quiet -r tools/requirements.txt pytest
+    - |
+      PATH="$PWD/.venv/bin:$PATH" make test-python
+    - |
+      make test-contract
+
+analyse:
+  stage: analyse
+  needs: [build]
+  rules:
+    - if: '$RUN_LINT == "false"'
+      when: never
+    - when: on_success
+  script:
+    - |
+      make lint
+    - |
+      make size
+
+package:
+  stage: package
+  needs: [build]
+  script:
+    - |
+      make package-hwlink
+    - |
+      python3 ci/package.py --name bootloader --version "$(ci/version.sh)" build/boot.elf build/boot.bin build/boot.hex build/boot.map build/soccentric-hwlink README.md LICENSE
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 30 days
+
+release:
+  stage: release
+  needs: [package]
+  rules:
+    - if: '$CI_COMMIT_TAG && $GITHUB_RELEASE_TOKEN'
+  script:
+    - |
+      GITHUB_TOKEN="$GITHUB_RELEASE_TOKEN" python3 ci/github_release.py --tag "$CI_COMMIT_TAG" --version "$(ci/version.sh)" dist/*
